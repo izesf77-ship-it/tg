@@ -112,11 +112,13 @@ USER appuser
 # Том для БД, медиа и рендеров (сохраняется между перезапусками)
 VOLUME ["/app/data"]
 
-# Проверка живости: процесс работает и база данных доступна.
-# Бот работает через long polling, поэтому HTTP-эндпоинта нет —
-# проверяем процесс и доступ к файлу БД средствами Python.
-HEALTHCHECK --interval=60s --timeout=10s --start-period=45s --retries=3 \
-    CMD python -c "import os,sys; p=os.environ.get('DB_PATH','/app/data/bot.sqlite3'); \
-sys.exit(0 if os.path.isdir('/app/data') else 1)"
+# Проверка живости: HTTP-эндпоинт /health поднимает бот.
+# Бот работает через long polling, но платформа (Traefik) ожидает
+# отвечающий HTTP на порту из PORT, иначе домен отдаёт 502.
+ENV PORT=8080
+EXPOSE 8080
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import os,urllib.request,sys; p=os.environ.get('PORT','8080'); r=urllib.request.urlopen('http://127.0.0.1:%s/health'%p,timeout=5); sys.exit(0 if r.status==200 else 1)"
 
 CMD ["python", "docker-entrypoint.py"]

@@ -22,6 +22,7 @@ from bot.config import settings
 from bot.database.engine import create_all, dispose_engine
 from bot.database.repositories import UsageRepository
 from bot.generators.fonts import get_font_manager
+from bot.health import set_status, start_health_server
 from bot.handlers import admin, ai, create, editor, errors, menus, my_chats, start
 from bot.logging_config import setup_logging
 from bot.middleware import DbSessionMiddleware, ErrorMiddleware
@@ -150,6 +151,11 @@ async def main() -> int:
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
+    # Платформа (Traefik) ждёт HTTP на порту из переменной PORT.
+    # Для бота на long polling он не нужен, но без него домен отдаёт 502.
+    start_health_server()
+    set_status(bot="running")
+
     # Ошибки, при которых бессмысленно сразу падать: сеть отвалилась,
     # Telegram временно недоступен, другой экземпляр бота забрал polling.
     RETRYABLE = (
@@ -171,6 +177,7 @@ async def main() -> int:
                     )
                     await asyncio.sleep(delay)
                 await bot.delete_webhook(drop_pending_updates=True)
+                set_status(telegram="connected")
                 logger.info("Polling запущен. Нажмите Ctrl+C для остановки.")
                 attempt = 0
                 await dp.start_polling(
@@ -181,6 +188,7 @@ async def main() -> int:
                 raise
             except RETRYABLE as exc:
                 attempt += 1
+                set_status(telegram=f"error: {type(exc).__name__}")
                 logger.error("Сбой соединения с Telegram: %s: %s",
                              type(exc).__name__, exc)
             except Exception as exc:  # noqa: BLE001

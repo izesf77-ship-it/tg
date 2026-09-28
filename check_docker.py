@@ -121,11 +121,17 @@ def check_dockerfile(path: Path) -> None:
     for keyword, message in (
         ("HEALTHCHECK", "Нет HEALTHCHECK"),
         ("VOLUME", "Нет VOLUME — данные не переживут пересборку"),
+        ("EXPOSE", "Нет EXPOSE — платформа не найдёт порт для прокси"),
     ):
         if keyword in text:
             ok(f"{keyword} присутствует")
         else:
             fail(message)
+
+    if "/health" in text:
+        ok("HEALTHCHECK проверяет HTTP-эндпоинт /health")
+    else:
+        fail("HEALTHCHECK не использует /health — порт не будет отвечать")
 
     if re.search(r"^USER\s+(?!root)", text, re.MULTILINE):
         ok("USER задан (контейнер работает не от root)")

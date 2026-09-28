@@ -361,12 +361,40 @@ def check_log_scrub() -> str:
     return "секреты скрыты, диагностика сохранена"
 
 
+@step("HTTP-сервис healthcheck отвечает")
+def check_health_server() -> str:
+    import json
+    import urllib.request
+
+    from bot.health import set_status, start_health_server
+
+    port = 18099
+    server = start_health_server(port)
+    assert server is not None, "Сервер не поднялся"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            assert r.status == 200, f"HTTP {r.status}"
+            payload = json.loads(r.read().decode("utf-8"))
+        assert payload.get("status") == "ok", payload
+
+        set_status(bot="running", telegram="connected")
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+        assert payload["bot"] == "running", payload
+        assert payload["telegram"] == "connected", payload
+    finally:
+        server.shutdown()
+        server.server_close()
+    return f"порт {port}, /health отдаёт 200 со статусом"
+
+
 @step("Проверка импорта всех модулей")
 def check_imports() -> str:
     import importlib
 
     modules = [
         "bot.config", "bot.logging_config", "bot.states", "bot.screens",
+        "bot.health",
         "bot.middleware", "bot.main", "bot.models", "bot.schemas",
         "bot.database", "bot.database.engine", "bot.database.repositories",
         "bot.utils.callbacks", "bot.utils.errors", "bot.utils.files",
@@ -795,6 +823,7 @@ def main() -> int:
     section("Импорты и архитектура")
     check_env_config()
     check_log_scrub()
+    check_health_server()
     check_imports()
     check_dispatcher()
     check_keyboards()

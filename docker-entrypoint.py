@@ -35,7 +35,15 @@ def check_data_dir() -> bool:
     пользователь не может писать в /app/data. Здесь это выявляется заранее и
     выводится понятная подсказка.
     """
-    db_path = os.environ.get("DB_PATH", "/app/data/bot.sqlite3")
+    # Путь берём из настроек, а не напрямую из ENV: в config.db_path
+    # относительный путь превращается в абсолютный внутри контейнера.
+    # Иначе каталог зависел бы от рабочего каталога процесса.
+    try:
+        from bot.config import settings
+
+        db_path = str(settings.db_file)
+    except Exception:  # noqa: BLE001 # pragma: no cover
+        db_path = os.environ.get("DB_PATH", "/app/data/bot.sqlite3")
     directory = os.path.dirname(db_path) or "/app/data"
     try:
         os.makedirs(directory, exist_ok=True)
@@ -74,25 +82,57 @@ def _log_permission_hint(directory: str) -> None:
     log('  Либо запустите контейнер от root: добавьте user: "0:0" в compose')
 
 
-async def check_telegram(bot_token: str) -> bool:
+def _mask_proxy(raw: str) -> str:
+    """Скрыть логин и пароль в URL прокси перед выводом в лог."""
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(raw)
+        if not parsed.username and not parsed.password:
+            return raw
+        netloc = parsed.hostname or ""
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunparse(
+            (parsed.scheme, f"***:***@{netloc}", parsed.path, "", "", "")
+        )
+    except Exception:  # noqa: BLE001 # pragma: no cover
+        return "***"
+
+
+async def check_telegram(bot_token: str):
     """Проверить токен реальным вызовом getMe.
 
-    Разделяет две принципиально разные причины падения, которые по логам
+    Разделяет три принципиально разные ситуации, которые по логам
     невозможно отличить:
-      * 401 Unauthorized — токен неверный;
-      * сетевая ошибка — нет доступа к api.telegram.org.
+      * 401 Unauthorized — токен неверный (фатально, ждать нечего);
+      * сетевая ошибка — нет доступа к api.telegram.org (временная,
+        процесс продолжает жить и повторяет попытки);
+      * 200 — всё в порядке.
+
+    Проверка идёт через тот же прокси, что и сам бот: без этого
+    TELEGRAM_PROXY дал бы ложное «нет доступа» при рабочем прокси.
     """
     import httpx
 
     url = f"https://api.telegram.org/bot{bot_token}/getMe"
+    client_kwargs: dict = {"timeout": 20.0}
+    proxy = (os.environ.get("TELEGRAM_PROXY") or "").strip()
+    if proxy:
+        if "://" not in proxy:
+            proxy = f"socks5://{proxy}"
+        client_kwargs["proxy"] = proxy
+        log(f"Проверка Telegram через прокси: {_mask_proxy(proxy)}")
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url)
     except Exception as exc:  # noqa: BLE001
         log(f"СЕТЬ: нет доступа к api.telegram.org — {type(exc).__name__}: {exc}")
-        log("  Если бот запущен за рубежом или в сети с ограничениями, "
-            "укажите прокси: TELEGRAM_PROXY=socks5://user:pass@host:port")
-        return False
+        log("  Бот всё равно запускается и будет повторять попытки.")
+        log("  Если попытки не помогают, укажите прокси: "
+            "TELEGRAM_PROXY=socks5://user:pass@host:1080")
+        return None  # не фатально
 
     if response.status_code == 401:
         log("ОШИБКА: Telegram отклонил токен (401 Unauthorized).")
@@ -100,7 +140,7 @@ async def check_telegram(bot_token: str) -> bool:
         return False
     if response.status_code != 200:
         log(f"ПРЕДУПРЕЖДЕНИЕ: getMe вернул HTTP {response.status_code}")
-        return True
+        return None
     try:
         username = response.json().get("result", {}).get("username", "?")
     except Exception:  # noqa: BLE001 # pragma: no cover
@@ -157,10 +197,13 @@ def main() -> int:
     if not check_data_dir():
         return 1
 
-    # Проверка связи с Telegram: отличает неверный токен от недоступной сети
+    # Проверка связи с Telegram: отличает неверный токен от недоступной сети.
+    # Сетевая ошибка НЕ фатальна — бот запускается и повторяет попытки сам,
+    # иначе платформа перезапускала бы контейнер в бесконечном цикле.
     try:
-        if not asyncio.run(check_telegram(token)):
-            log("Запуск прерван: Telegram API недоступен или токен отклонён.")
+        telegram_ok = asyncio.run(check_telegram(token))
+        if telegram_ok is False:
+            log("Запуск прерван: токен отклонён Telegram.")
             return 1
     except Exception as exc:  # noqa: BLE001 # pragma: no cover
         log(f"Проверку Telegram пропускаю: {type(exc).__name__}: {exc}")
