@@ -1,0 +1,799 @@
+﻿"""Самопроверка проекта.
+
+Запуск:  python check.py
+Тестовые изображения сохраняются в ./output,
+подробный л��г — в ./_check_report.txt
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+import traceback
+from contextlib import redirect_stdout
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from bot.logging_config import setup_logging  # noqa: E402
+
+setup_logging("WARNING")
+
+# Консоль Windows может не печатать emoji/стрелки в cp1251
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pragma: no cover
+        pass
+
+OUTPUT = ROOT / "output"
+REPORT = ROOT / "_check_report.txt"
+RESULTS = []
+_BUFFER = io.StringIO()
+
+
+def _emit(text: str) -> None:
+    """Дублировать вывод в консоль и в итоговый отчёт."""
+    print(text)
+    _BUFFER.write(text + "\n")
+
+
+def ok(name: str, detail: str = "") -> None:
+    RESULTS.append((True, name, detail))
+    _emit(f"  [OK]   {name}" + (f" — {detail}" if detail else ""))
+
+
+def fail(name: str, detail: str = "") -> None:
+    RESULTS.append((False, name, detail))
+    _emit(f"  [FAIL] {name}" + (f" — {detail}" if detail else ""))
+
+
+def section(title: str) -> None:
+    _emit("")
+    _emit(f"=== {title} ===")
+
+
+def step(name: str):
+    """Декоратор: выполняет проверку и фиксирует результат."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            try:
+                detail = func(*args, **kwargs) or ""
+                ok(name, detail)
+            except Exception as exc:  # noqa: BLE001
+                fail(name, f"{type(exc).__name__}: {exc}")
+                traceback.print_exc(file=_BUFFER)
+        return wrapper
+
+    return decorator
+
+
+def build_demo_chat(message_count: int = 12) -> "ChatConfig":
+    """Тестовая переписка на русском с разными типами сообщений."""
+    from bot.schemas import (
+        ChatConfig, MediaItem, Message, MessageKind, Participant, Reaction,
+    )
+
+    config = ChatConfig(title="Алина", style="telegram")
+    config.participants = [
+        Participant(
+            name="Алексей", username="alexey", side=0,
+            status="был(а) недавно", last_seen="21:14", premium=True,
+        ),
+        Participant(
+            name="Алина", username="alina_k", side=1, status="в сети", premium=False,
+        ),
+    ]
+
+    first = Message(
+        kind=MessageKind.TEXT, text="Привет! Ты где?", time="21:14",
+        side=0, author_index=0, reaction=Reaction(emoji="👍", count=1),
+    )
+    config.add_message(first)
+    config.add_message(
+        Message(
+            kind=MessageKind.TEXT, text="Привет! Дома сижу, надоело уже 😩",
+            time="21:15", side=1, author_index=1, reply_to=first.id,
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.IMAGE, time="21:16", side=0, author_index=0,
+            media=MediaItem(kind=MessageKind.IMAGE, caption="Вот что нашла"),
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.VOICE, time="21:17", side=1, author_index=1,
+            media=MediaItem(kind=MessageKind.VOICE, duration="0:14"),
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.TEXT,
+            text="Очень длинное сообщение, которое специально проверяет перенос строк "
+                 "в рендерере: оно содержит много слов и должно корректно разбиться "
+                 "на несколько строк, чтобы текст не вылезал за границы пузыря.",
+            time="21:18", side=0, author_index=0,
+            reaction=Reaction(emoji="🔥", count=3),
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.FILE, time="21:19", side=0, author_index=0,
+            media=MediaItem(
+                kind=MessageKind.FILE, file_name="счёт_на_оплату.pdf", file_size="2,4 МБ"
+            ),
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.STICKER, time="21:20", side=1, author_index=1,
+            media=MediaItem(kind=MessageKind.STICKER, emoji="😂"),
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.SERVICE, text="Алина зарегистрирована в Telegram",
+            time="21:20", side=0,
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.FORWARD, text="Смотри, что он написал",
+            forward_from="Незнакомец", time="21:21", side=1, author_index=1,
+        )
+    )
+    config.add_message(
+        Message(
+            kind=MessageKind.DATE, text="Завтра", time="09:15", side=0,
+        )
+    )
+
+    base_minutes = 21 * 60 + 22
+    while len(config.messages) < message_count:
+        index = len(config.messages)
+        side = index % 2
+        author = 0 if side == 0 else 1
+        text = (
+            f"Сообщение №{index + 1} для проверки длинной переписки и переноса строк."
+            if index % 3 == 0
+            else f"Короткое сообщение {index + 1}"
+        )
+        minutes = base_minutes + index
+        config.add_message(
+            Message(
+                kind=MessageKind.TEXT, text=text, side=side, author_index=author,
+                time=f"{(minutes // 60) % 24:02d}:{minutes % 60:02d}",
+                read=index % 4 != 0,
+            )
+        )
+    return config
+
+
+@step("Рендер стиля Telegram (12 сообщений)")
+def check_render_telegram() -> str:
+    from bot.generators import get_renderer
+
+    config = build_demo_chat(12)
+    renderer = get_renderer("telegram")
+    img = renderer.render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT / "telegram_demo.png"
+    img.save(path)
+    assert img.width == 1080, f"Ширина {img.width} != 1080"
+    assert img.height > 800, f"Высота подозрительно мала: {img.height}"
+    return f"{img.width}x{img.height}, {path.name}"
+
+
+@step("Рендер всех стилей")
+def check_all_styles() -> str:
+    from bot.generators import AVAILABLE_STYLES, get_renderer
+
+    config = build_demo_chat(8)
+    details = []
+    for style in AVAILABLE_STYLES:
+        img = get_renderer(style.key).render(config)
+        OUTPUT.mkdir(parents=True, exist_ok=True)
+        img.save(OUTPUT / f"style_{style.key}.png")
+        details.append(f"{style.key}:{img.height}")
+    return " ".join(details)
+
+
+@step("Пустая переписка")
+def check_empty_chat() -> str:
+    from bot.generators import get_renderer
+    from bot.schemas import ChatConfig
+
+    config = ChatConfig(title="Пусто")
+    config.ensure_participants()
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "empty.png")
+    return f"{img.width}x{img.height}"
+
+
+@step("50+ сообщений (автовысота)")
+def check_long_chat() -> str:
+    from bot.generators import get_renderer
+
+    config = build_demo_chat(60)
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "long_60.png")
+    assert img.height > 6000, f"Высота {img.height} — не выросла автоматически"
+    return f"{len(config.messages)} сообщений -> {img.width}x{img.height}"
+
+
+@step("Рост высоты пропорционален числу сообщений")
+def check_height_growth() -> str:
+    from bot.generators import get_renderer
+
+    small = get_renderer("telegram").render(build_demo_chat(10))
+    big = get_renderer("telegram").render(build_demo_chat(40))
+    assert big.height > small.height * 1.8, (
+        f"Высота растёт нелинейно: {small.height} -> {big.height}"
+    )
+    return f"10 сообщ.={small.height}px, 40 сообщ.={big.height}px"
+
+
+@step("Очень длинный текст (перенос строк)")
+def check_long_text() -> str:
+    from bot.generators import get_renderer
+    from bot.schemas import Message
+
+    config = build_demo_chat(4)
+    config.messages = config.messages[:1]
+    huge = "Это очень длинное сообщение " * 60
+    config.messages.append(Message(text=huge, time="10:00", side=0, author_index=0))
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "long_text.png")
+    return f"{len(huge)} символов -> {img.width}x{img.height}"
+
+
+@step("Одно слово длиннее ширины пузыря")
+def check_long_word() -> str:
+    from bot.generators import get_renderer
+    from bot.schemas import Message
+
+    config = build_demo_chat(2)
+    config.messages.append(
+        Message(text="A" * 400, time="10:00", side=0, author_index=0)
+    )
+    config.messages.append(
+        Message(text="https://example.com/" + "very-long-path-segment/" * 12,
+                time="10:01", side=1, author_index=1)
+    )
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "long_word.png")
+    return f"{img.width}x{img.height}"
+
+
+@step("Эмодзи и кириллица в тексте")
+def check_emoji() -> str:
+    from bot.generators import get_renderer
+    from bot.schemas import Message
+
+    config = build_demo_chat(3)
+    config.messages.append(
+        Message(
+            text="Привет 😀 Привет 🎉🔥 Крык 😎 Ура! 🇷🇺",
+            time="11:00", side=1, author_index=1,
+        )
+    )
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "emoji.png")
+    from bot.generators.fonts import get_font_manager
+
+    fm = get_font_manager()
+    assert fm.measure("Привет", 30) > 0
+    return f"шрифты: {fm.info()}"
+
+
+@step("Кириллица действительно отрисована (не пустые рамки)")
+def check_cyrillic_pixels() -> str:
+    from PIL import Image, ImageDraw
+
+    from bot.generators.fonts import get_font_manager
+
+    fm = get_font_manager()
+    img = Image.new("L", (400, 80), 0)
+    ImageDraw.Draw(img).text((5, 5), "Привет мир", font=fm.get(40), fill=255)
+    bbox = img.getbbox()
+    assert bbox is not None, "Текст не отрисован"
+    width = bbox[2] - bbox[0]
+    assert width > 120, f"Подозрительно узкий текст: {width}px"
+    return f"ширина текста {width}px"
+
+
+@step("Проверка импорта всех модулей")
+def check_imports() -> str:
+    import importlib
+
+    modules = [
+        "bot.config", "bot.logging_config", "bot.states", "bot.screens",
+        "bot.middleware", "bot.main", "bot.models", "bot.schemas",
+        "bot.database", "bot.database.engine", "bot.database.repositories",
+        "bot.utils.callbacks", "bot.utils.errors", "bot.utils.files",
+        "bot.utils.text_utils", "bot.utils.time_utils",
+        "bot.generators", "bot.generators.base", "bot.generators.registry",
+        "bot.generators.telegram", "bot.generators.styles",
+        "bot.generators.fonts", "bot.generators.drawing",
+        "bot.generators.themes", "bot.generators.text_layout",
+        "bot.services", "bot.services.chat_service", "bot.services.ai_service",
+        "bot.services.limit_service", "bot.services.render_service",
+        "bot.services.templates_service", "bot.services.premium_service",
+        "bot.services.user_service",
+        "bot.keyboards", "bot.keyboards.texts",
+        "bot.handlers.start", "bot.handlers.menus", "bot.handlers.create",
+        "bot.handlers.editor", "bot.handlers.my_chats", "bot.handlers.ai",
+        "bot.handlers.admin", "bot.handlers.errors",
+    ]
+    for name in modules:
+        importlib.import_module(name)
+    return f"{len(modules)} модулей"
+
+
+@step("Сборка Dispatcher")
+def check_dispatcher() -> str:
+    from bot.main import build_dispatcher
+
+    dp = build_dispatcher()
+    return f"роутеров подключено: {len(dp.sub_routers)}"
+
+
+@step("Клавиатуры и тексты экранов")
+def check_keyboards() -> str:
+    import bot.keyboards.texts as T
+    from bot.keyboards import admin as AK, common as KB, create as CK
+    from bot.keyboards import editor as EK, menus as MK
+    from bot.services.templates_service import templates_service
+
+    config = build_demo_chat(3)
+    built = [
+        KB.main_menu(), KB.main_menu_inline(), KB.cancel_menu(), KB.input_menu(),
+        CK.style_menu(), CK.participants_menu(config, 1), CK.templates_menu(),
+        EK.editor_keyboard(config, 1), EK.message_actions_menu(0, 1, config),
+        EK.add_message_menu(1), EK.author_menu(1, ["A", "B"]), EK.time_menu(1),
+        EK.reaction_menu(0, 1), EK.type_menu(0, 1), EK.media_menu(0, 1),
+        EK.reply_target_menu(config, 1), EK.preview_keyboard(1), EK.done_keyboard(1),
+        MK.chats_list([], 0, 0), MK.ai_menu(True), MK.chat_settings_menu(1),
+        MK.global_settings_menu(), MK.help_menu(), MK.confirm_wipe(),
+        AK.admin_menu(), AK.users_page(0, 3), AK.broadcast_confirm(1, 10),
+        AK.limits_menu({}),
+    ]
+    for template in templates_service.all():
+        T.template_card(template)
+        CK.template_card(template, 1)
+    for text in (
+        T.WELCOME, T.HOW_IT_WORKS, T.RULES, T.participants_screen(config),
+        T.editor_screen(config), T.chat_summary(config),
+        T.chats_list_text([], 0, 0, 5), T.ai_result(config), T.done_text(),
+    ):
+        assert text and len(text) > 10, "Пустой текст экрана"
+    return f"{len(built)} клавиатур + тексты экранов"
+
+
+@step("Callback-парсер")
+def check_callbacks() -> str:
+    from bot.utils import callbacks as C
+
+    data = C.cb(C.S_EDIT, "open", 5, 12)
+    assert C.head(data) == C.S_EDIT
+    assert C.action(data) == "open"
+    assert C.arg_int(data, 0) == 5
+    assert C.arg_int(data, 1) == 12
+    assert C.arg_int(data, 2, -1) == -1
+    assert len(data.encode()) <= C.MAX_LEN
+    return f"{data!r} = {len(data.encode())} байт"
+
+
+@step("Разбор времени (все форматы)")
+def check_time_parsing() -> str:
+    from bot.utils.time_utils import current_time_str, is_valid_time, parse_time
+
+    for raw, expected in (
+        ("12:41", "12:41"), ("9:05", "09:05"), ("23:07", "23:07"),
+        ("09:15", "09:15"), ("2307", "23:07"), ("9.15", "09:15"), ("9-15", "09:15"),
+    ):
+        assert parse_time(raw) == expected, f"{raw} -> {parse_time(raw)}"
+    for bad in ("25:00", "12:60", "abc", "", "-1:00"):
+        assert not is_valid_time(bad), f"Должно быть неверным: {bad!r}"
+    assert len(current_time_str()) == 5
+    return "7 валидных + 5 неверных"
+
+
+@step("Схемы: JSON round-trip и лимиты")
+def check_schemas() -> str:
+    import json
+
+    from bot.schemas import MAX_MESSAGES, ChatConfig, Message
+    from bot.utils.errors import LimitExceededError
+
+    config = build_demo_chat(15)
+    expected = len(config.messages)
+    assert expected >= 15, f"Мало сообщений в фикстуре: {expected}"
+    restored = ChatConfig.from_json(config.to_json())
+    assert len(restored.messages) == expected
+    assert restored.style == config.style
+    assert restored.participants[0].name == config.participants[0].name
+    assert len(ChatConfig.from_json(json.dumps(config.to_json())).messages) == expected
+
+    tiny = ChatConfig()
+    tiny.settings.max_messages = 3
+    for i in range(3):
+        tiny.add_message(Message(text=f"m{i}"))
+    try:
+        tiny.add_message(Message(text="overflow"))
+        raise AssertionError("Лимит не сработал")
+    except LimitExceededError:
+        pass
+
+    bad = Message.from_json({"kind": "text", "text": "x" * 9000, "side": 5})
+    assert len(bad.text) <= 4096 and bad.side in (0, 1)
+    return f"round-trip OK, глобальный лимит={MAX_MESSAGES}"
+
+
+@step("Шаблоны строятся и рендерятся")
+def check_templates() -> str:
+    from bot.generators import get_renderer
+    from bot.services.templates_service import templates_service
+
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    details = []
+    for template in templates_service.all():
+        config = template.build()
+        assert len(config.messages) >= 8, f"{template.key}: мало сообщений"
+        assert len(config.participants) == 2, f"{template.key}: нет двух участников"
+        assert config.template == template.key
+        img = get_renderer(config.style).render(config)
+        details.append(f"{template.key}:{len(config.messages)}")
+        img.save(OUTPUT / f"tpl_{template.key}.png")
+    return f"{len(details)} шаблонов: " + " ".join(details)
+
+
+@step("AI: корректное отключение и разбор ответа")
+def check_ai() -> str:
+    from bot.services.ai_service import AIService, ai_service
+
+    state = "включён" if ai_service.enabled else "отключён (нет ключа)"
+    if not ai_service.enabled:
+        assert "OPENROUTER_API_KEY" in ai_service.status_text()
+
+    payload = {
+        "title": "Тест",
+        "participants": [{"name": "А", "username": "a"}, {"name": "Б", "username": "b"}],
+        "messages": [
+            {"author": 0, "text": "Привет", "time": "12:41", "reaction": "👍"},
+            {"author": 1, "text": "Привет! Как дела?", "time": "12:42"},
+            {"author": 0, "text": "Норм", "time": "99:99"},
+        ],
+    }
+    config = AIService.build_config(payload)
+    assert len(config.messages) == 3
+    assert config.messages[0].reaction.emoji == "👍"
+    assert config.messages[1].side == 1
+    assert config.messages[2].time != "99:99"
+    for bad in ({"messages": []}, {"messages": "нет"}, {}):
+        try:
+            AIService.build_config(bad)
+            raise AssertionError("Ожидалась ошибка")
+        except Exception as exc:  # noqa: BLE001
+            assert "AI" in str(exc), str(exc)
+    return state
+
+
+@step("Лимиты и антиспам")
+def check_limits() -> str:
+    import asyncio
+
+    from bot.services.limit_service import LimitResult, LimitService
+
+    class FakeUsage:
+        def __init__(self):
+            self.count = 0
+
+        async def count_since(self, user_id, kind, since):
+            return self.count
+
+        async def last_event(self, user_id, kind):
+            return None
+
+    async def run():
+        service = LimitService.__new__(LimitService)
+        service.usage = FakeUsage()
+        service.users = None
+        service._overrides = {}
+        first = await service.check_image(1, False)
+        assert first.allowed and first.limit == 20
+        service.usage.count = 20
+        blocked = await service.check_image(1, False)
+        assert not blocked.allowed and blocked.retry_after >= 1
+        premium = await service.check_image(1, True)
+        assert premium.allowed and premium.limit == 100
+        service.usage.count = 0
+        assert (await service.check_spam(1)).allowed
+        service.set_override("limit_image_per_hour", 5)
+        assert service.value("limit_image_per_hour") == 5
+        assert bool(LimitResult(True)) is True
+        return "20/час, 100/час Pro, антиспам, override"
+
+    return asyncio.run(run())
+
+
+class FakeTgUser:
+    """Минимальный объект пользователя Telegram для тестов репозитория."""
+
+    def __init__(self, id: int, username: str = "", first_name: str = "",
+                 last_name: str = "", language_code: str = "ru"):
+        self.id = id
+        self.username = username
+        self.first_name = first_name
+        self.last_name = last_name
+        self.language_code = language_code
+
+
+def _check_session_start():
+    """Импорты для проверки БД (вынесены, чтобы не дублировать)."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    return create_async_engine, async_sessionmaker, AsyncSession
+
+
+@step("SQLite: полный сценарий (создание → правка → сохранение)")
+def check_database_flow() -> str:
+    """Проверяет БД, репозитории и сервисы на временной базе."""
+    import asyncio
+    import tempfile
+
+    create_async_engine, async_sessionmaker, AsyncSession = _check_session_start()
+
+    async def run() -> str:
+        from bot.database.repositories import StatsRepository
+        from bot.models import Base
+        from bot.schemas import Message
+        from bot.services.chat_service import ChatService
+        from bot.services.limit_service import LimitService
+        from bot.services.render_service import render_service
+        from bot.services.user_service import UserService
+
+        tmp_dir = tempfile.mkdtemp(prefix="tgbot_check_")
+        db_path = Path(tmp_dir) / "check.sqlite3"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            async with session_maker() as session:
+                users = UserService(session)
+                user = await users.register(
+                    FakeTgUser(id=5550001, username="checker", first_name="Тест")
+                )
+                assert user.id == 5550001
+                again = await users.register(
+                    FakeTgUser(id=5550001, username="checker2", first_name="Тест2")
+                )
+                assert again.id == 5550001 and again.username == "checker2"
+
+                limits = LimitService(session)
+                await limits.log_image(5550001, "1")
+                await limits.log_image(5550001, "1")
+                check = await limits.check_image(5550001)
+                assert check.used == 2, f"Счётчик неверный: {check.used}"
+
+                chats = ChatService(session)
+                chat, config = await chats.create(5550001, style="telegram")
+                assert chat.id > 0 and len(config.participants) == 2
+
+                config.participants[0].name = "Алексей"
+                config.participants[1].name = "Алина"
+                first = Message(text="Привет!", time="12:41", side=0, author_index=0)
+                config.add_message(first)
+                config.add_message(
+                    Message(text="Привет! Дома", time="12:42", side=1, author_index=1)
+                )
+                await chats.save(5550001, chat.id, config)
+
+                loaded = await chats.get_config(5550001, chat.id)
+                assert len(loaded.messages) == 2
+                assert loaded.participants[0].name == "Алексей"
+                assert loaded.messages[0].text == "Привет!"
+
+                # --- Правка текста и времени ---
+                loaded.messages[0].text = "Привет, ты где?"
+                loaded.messages[0].time = "21:14"
+                await chats.save(5550001, chat.id, loaded)
+
+                # --- Изменение порядка ---
+                order_before = [m.id for m in loaded.messages]
+                ChatService.move_message(loaded, loaded.messages[0].id, 1)
+                assert [m.id for m in loaded.messages] == list(reversed(order_before))
+                ChatService.move_message(loaded, loaded.messages[0].id, 1)
+                assert [m.id for m in loaded.messages] == order_before
+
+                # --- Удаление сообщения ---
+                ChatService.delete_message(loaded, loaded.messages[1].id)
+                await chats.save(5550001, chat.id, loaded)
+                assert len((await chats.get_config(5550001, chat.id)).messages) == 1
+
+                # --- Ответ на сообщение ---
+                target = (await chats.get_config(5550001, chat.id)).messages[0]
+                config2 = await chats.get_config(5550001, chat.id)
+                config2.add_message(
+                    Message(
+                        text="Это ответ", time="21:15", side=1,
+                        author_index=1, reply_to=target.id,
+                    )
+                )
+                await chats.save(5550001, chat.id, config2)
+                reloaded = await chats.get_config(5550001, chat.id)
+                assert reloaded.messages[1].reply_to == target.id
+
+                # MARKER_CHECK_DB
+                return await _finish_db_checks(
+                    session, chats, StatsRepository, UserService, db_path, render_service
+                )
+        finally:
+            await engine.dispose()
+            try:
+                for item in db_path.parent.iterdir():
+                    item.unlink()
+                db_path.parent.rmdir()
+            except OSError:
+                pass
+
+    return asyncio.run(run())
+
+
+async def _finish_db_checks(session, chats, StatsRepository, UserService,
+                            db_path, render_service) -> str:
+    """Завершающие проверки БД: финализация, черновики, дублирование, рендер."""
+    user_id = 5550001
+
+    # --- Финализация и список сохранённых ---
+    config = await chats.get_config(user_id, 1)
+    await chats.finish(user_id, 1, config)
+    assert await chats.count_saved(user_id) == 1
+    saved = await chats.list_saved(user_id)
+    assert saved and saved[0].message_count == 2
+
+    # --- Черновики ---
+    draft_chat, _ = await chats.create(user_id, style="whatsapp")
+    assert (await chats.get_draft(user_id)).id == draft_chat.id
+    assert await chats.clear_drafts(user_id) == 1
+    assert await chats.get_draft(user_id) is None
+
+    # --- Дублирование ---
+    copy = await chats.duplicate(user_id, saved[0].id)
+    assert copy.id != saved[0].id and copy.title.endswith("(копия)")
+
+    # --- Удаление ---
+    await chats.delete(user_id, copy.id)
+    assert len(await chats.list_saved(user_id)) == 1
+
+    # --- Статистика ---
+    # К этому моменту в БД остаётся ровно одна переписка:
+    # черновик и копия удалены, а статистика считает все записи.
+    stats = await StatsRepository(session).collect()
+    assert stats.users >= 1, f"users={stats.users}"
+    assert stats.images == 2, f"images={stats.images}"
+    assert stats.chats >= 1, f"chats={stats.chats}"
+    assert stats.active_24h >= 1, f"active_24h={stats.active_24h}"
+
+    # --- Рендер переписки, загруженной из БД ---
+    items = await chats.list_saved(user_id)
+    config = await chats.get_config(user_id, items[0].id)
+    data = await render_service.render_bytes(config)
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", "Невалидный PNG"
+    assert len(data) > 5000, "Слишком маленький файл"
+    return (
+        f"БД {db_path.stat().st_size} байт, "
+        f"картинка {len(data) // 1024} КБ, юзеров={stats.users}"
+    )
+
+
+@step("Помечается максимальная высота (защита от MemoryError)")
+def check_max_height() -> str:
+    from bot.config import settings
+    from bot.generators import get_renderer
+
+    old = settings.render_max_height
+    try:
+        settings.render_max_height = 3000
+        img = get_renderer("telegram").render(build_demo_chat(40))
+        assert img.height <= 3000, f"Высота {img.height} > лимита"
+        return f"ограничено до {img.height}px"
+    finally:
+        settings.render_max_height = old
+
+
+@step("Битые входные данные не ломают рендер")
+def check_broken_inputs() -> str:
+    from bot.generators import get_renderer
+    from bot.schemas import MediaItem, Message
+    from bot.utils import files as F
+
+    config = build_demo_chat(2)
+    config.messages.append(Message(text="", time="", side=0, author_index=9))
+    broken = Path("nonexistent_broken_image.jpg")
+    config.messages.append(
+        Message(
+            kind="image", time="10:00", side=0, author_index=0,
+            media=MediaItem(kind="image", path=str(broken), caption="битая ссылка"),
+        )
+    )
+    assert F.probe_image(broken) is None, "Битый файл не распознан"
+    assert F.safe_open(broken) is None
+    img = get_renderer("telegram").render(config)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    img.save(OUTPUT / "broken_inputs.png")
+    return f"{img.width}x{img.height}, битые файлы обработаны"
+
+
+def main() -> int:
+    _emit("=" * 62)
+    _emit("  САМОПРОВЕРКА: Telegram Chat Constructor Bot")
+    _emit("=" * 62)
+
+    section("Импорты и архитектура")
+    check_imports()
+    check_dispatcher()
+    check_keyboards()
+    check_callbacks()
+
+    section("Утилиты, схемы, лимиты, AI")
+    check_time_parsing()
+    check_schemas()
+    check_limits()
+    check_ai()
+
+    section("Рендерер")
+    check_render_telegram()
+    check_all_styles()
+    check_empty_chat()
+    check_long_chat()
+    check_height_growth()
+    check_long_text()
+    check_long_word()
+    check_emoji()
+    check_cyrillic_pixels()
+    check_max_height()
+    check_broken_inputs()
+
+    section("Контент")
+    check_templates()
+
+    section("База данных (полный сценарий)")
+    check_database_flow()
+
+    passed = sum(1 for good, _, _ in RESULTS if good)
+    failed = len(RESULTS) - passed
+    _emit("")
+    _emit("=" * 62)
+    _emit(f"  ИТОГО: успешно {passed}, провалено {failed}")
+    if failed:
+        _emit("")
+        _emit("  Проваленные проверки:")
+        for good, name, detail in RESULTS:
+            if not good:
+                _emit(f"    x {name} - {detail}")
+    _emit("=" * 62)
+    try:
+        REPORT.write_text(_BUFFER.getvalue(), encoding="utf-8")
+    except OSError:  # pragma: no cover
+        pass
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+

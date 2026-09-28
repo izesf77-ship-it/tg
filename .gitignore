@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite3
+.env
+.venv/
+venv/
+data/
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+output/
+*.log
+.idea/
+.vscode/
+
+# --- Docker ---
+_check_report.txt
+_check*.txt
+_*.txt
+_dbg*.txt
+_run.txt
+_debug/
+

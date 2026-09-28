@@ -1,0 +1,10 @@
+# Telegram Chat Constructor Bot
+# Python 3.12+
+
+aiogram==3.31.0
+SQLAlchemy==2.0.54
+aiosqlite==0.22.1
+Pillow==12.3.0
+python-dotenv==1.2.1
+pydantic==2.13.5
+httpx==0.28.1

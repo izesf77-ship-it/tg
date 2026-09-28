@@ -1,0 +1,64 @@
+# ==========================================================
+#  Файлы и каталоги, которые НЕ попадают в образ
+#  (уменьшают контекст сборки и не засоряют образ)
+# ==========================================================
+
+# --- Секреты и локальное окружение ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Виртуальные окружения ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Python-кэш ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- Данные приложения (монтируются через volume) ---
+data/
+*.sqlite3
+*.sqlite3-journal
+*.db
+logs/
+*.log
+
+# --- Результаты генерации ---
+output/
+*.png
+!output/.gitkeep
+
+# --- Тестовые и отладочные файлы ---
+_check_report.txt
+_run.txt
+*.tmp
+.cache/
+
+# --- Git и IDE ---
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# --- Документация (не нужна в runtime) ---
+README.md
+fonts/README.txt
+
+# --- Docker ---
+Dockerfile
+.dockerignore
+docker-compose.yml
