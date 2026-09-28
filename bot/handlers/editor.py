@@ -93,7 +93,12 @@ async def _require_chat(target, state: FSMContext):
     if chat_id < 0:
         raise ChatNotFoundError()
 
-    event = target if hasattr(target, "data") else target.message
+    # Пользователь берётся из самого события. Раньше здесь стояло
+    # ``target if hasattr(target, "data") else target.message``: у aiogram
+    # Message поля data нет, поэтому для текстового сообщения выполнялось
+    # ``target.message`` и падало с
+    # «AttributeError: 'Message' object has no attribute 'message'».
+    event = target.message if isinstance(target, CallbackQuery) else target
     chats = get_services()["chats"]
     config = await chats.get_config(event.from_user.id, chat_id)
     # Синхронизируем FSM: отсюда берутся message_index, kind, side и т.п.
@@ -113,7 +118,6 @@ async def _save_and_back(
     target, state, config, chat_id, user_id, page: int = 0, header: str = ""
 ) -> None:
     """Сохранить конфиг и вернуться к списку сообщений."""
-    event = target if hasattr(target, "data") else target.message
     await get_services()["chats"].save(user_id, chat_id, config)
     await state.set_state(Flow.editor)
     # Снимаем ввод: поле/индекс больше не должны влиять на след. действие.

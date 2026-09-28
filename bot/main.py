@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from bot.config import settings
-from bot.database.engine import create_all, dispose_engine
+from bot.database.engine import create_all, dispose_engine, session_scope
 from bot.database.repositories import UsageRepository
 from bot.generators.fonts import get_font_manager
 from bot.health import set_status, start_health_server
@@ -92,8 +92,6 @@ async def on_startup(bot: Bot) -> None:
         await bot.set_my_commands(COMMANDS)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Не удалось обновить команды бота: %s", exc)
-
-    from bot.database.engine import session_scope
 
     async with session_scope() as session:
         removed = await UsageRepository(session).purge_old(30)

@@ -1386,6 +1386,19 @@ def check_broken_inputs() -> str:
     return f"{img.width}x{img.height}, битые файлы обработаны"
 
 
+class _FakeSent:
+    """Объект «отправленного сообщения» для заглушек aiogram."""
+
+    async def edit_text(self, *args, **kwargs):
+        return self
+
+    async def delete(self, *args, **kwargs):
+        return self
+
+    async def answer(self, *args, **kwargs):
+        return self
+
+
 class _FakeState:
     """Минимальный FSMContext с хранилищем в памяти."""
 
@@ -1408,6 +1421,140 @@ class _FakeState:
     async def clear(self):
         self._state = None
         self.data = {}
+
+
+@step("Ввод текста и выбор времени (регрессия из логов)")
+def check_time_flow_regression() -> str:
+    """Сценарий из логов: написать текст → нажать «Текущее время».
+
+    Раньше цепочка on_time_text → _commit_message → _save_and_back падала
+    с AttributeError, и сообщение не появлялось вовсе.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.database.repositories import ChatRepository
+    from bot.middleware import DbSessionMiddleware
+    from bot.schemas import ChatConfig
+    from bot.utils import callbacks as C
+
+    errors: list = []
+    shown: list = []
+
+    async def fake_show(event, text, keyboard=None, **kw):
+        shown.append(str(text)[:60])
+        return None
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052882
+        tg_user = User(id=uid, is_bot=False, first_name="PAUK88")
+
+        import bot.screens as SC
+
+        SC.show = fake_show
+        SC.safe_answer = lambda *a, **kw: asyncio.sleep(0)
+
+        async with session_scope() as session:
+            chat = await ChatRepository(session).create(
+                user_id=uid, config=ChatConfig(title="Тест", style="telegram")
+            )
+            chat_id = chat.id
+
+        state = _FakeState()
+
+        async def send(text: str):
+            """Отправить текстовое сообщение через настоящий middleware.
+
+            Методы Telegram монтируются на объект явно: иначе ``answer()``
+            на несмонтированной модели aiogram бросает RuntimeError. Это
+            особенность тестовой заглушки, в боте всё работает штатно.
+            """
+            msg = TgMessage(
+                message_id=99, date=datetime.datetime.now(),
+                chat=Chat(id=uid, type="private"), from_user=tg_user, text=text,
+            )
+            # Модели aiogram — pydantic с frozen=True, поэтому обычное
+            # присваивание запрещено; обходим через object.__setattr__.
+            for name in ("answer", "edit_text", "edit_media", "delete"):
+                object.__setattr__(msg, name, _fake_method(name))
+            return msg
+
+        sent: list = []
+
+        def _fake_method(name: str):
+            async def wrapper(*args, **kwargs):
+                sent.append(name)
+                return _FakeSent()
+
+            return wrapper
+
+        async def route(event):
+            """Отработать шаг, соответствующий ТЕКУЩЕМУ состоянию FSM.
+
+            Состояние читается в момент вызова: иначе после первого шага
+            тест продолжал бы слать текст в устаревший обработчик.
+            """
+            from bot.handlers.editor import on_add_text, on_time_text
+            from bot.states import Flow
+
+            step = await state.get_state()
+            if step == Flow.add_text:
+                await on_add_text(event, state)
+            elif step == Flow.add_time:
+                await on_time_text(event, state)
+            else:
+                errors.append(f"неожиданное состояние: {step}")
+
+        async def handle(msg):
+            async def handler(event, _d):
+                try:
+                    await route(event)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{type(exc).__name__}: {exc}")
+
+            await DbSessionMiddleware()(
+                handler, msg, {"event_from_user": tg_user}
+            )
+
+        # Шаг 1. Инициализируем состояние как после «Добавить сообщение».
+        from bot.states import Flow
+
+        await state.set_state(Flow.add_text)
+        await state.update_data(
+            chat_id=chat_id, kind="text", side=0, message_index=-1,
+            field="", pending_text="",
+        )
+
+        # Шаг 2. Пользователь пишет текст сообщения.
+        await handle(await send("Привет, это тест"))
+
+        # Шаг 3. Затем задаёт время — так работал баг из логов.
+        assert (await state.get_state()) == Flow.add_time, "бот не спросил время"
+        await handle(await send("12:41"))
+
+        assert not errors, "ошибки: " + "; ".join(errors)
+
+        async with session_scope() as session:
+            repo = ChatRepository(session)
+            cfg = await repo.load_config(await repo.get(chat_id))
+
+        assert len(cfg.messages) == 1, (
+            f"сообщение не сохранилось после выбора времени: {len(cfg.messages)}"
+        )
+        assert cfg.messages[0].text == "Привет, это тест", cfg.messages[0].text
+        return f"chat_id={chat_id}, сообщение сохранено: {cfg.messages[0].preview(20)!r}"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail, "сценарий не отработал"
+    return detail
 
 
 @step("Сценарий: сообщение → время → «Назад» (жалобы пользователя)")
@@ -1595,6 +1742,7 @@ def main() -> int:
     check_database_flow()
 
     section("Пользовательский сценарий (регрессии)")
+    check_time_flow_regression()
     check_user_journey()
 
     passed = sum(1 for good, _, _ in RESULTS if good)
