@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 
 from aiogram import Bot, F, Router
+from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -206,7 +207,25 @@ async def _start_add(
     )
 
 
-@router.callback_query(F.data.startswith(C.S_EDIT + ":"))
+#: Действия, у которых есть ОТДЕЛЬНЫЙ хендлер ниже по файлу.
+#: Если не исключить их из ``on_editor``, этот catch-all-хендлер
+#: (он зарегистрирован ПЕРВЫМ, а aiogram берёт первое подходящее)
+#: перехватит их все, и они будут отвечать «Сообщение не найдено».
+SPECIFIC_ACTIONS = frozenset({
+    "pickauthor", "settime", "manualtime", "preview", "done",
+    "open_done", "save", "drop", "setdisc", "setopt", "setstyle", "clear",
+})
+
+
+class NotSpecificAction(BaseFilter):
+    """Пропускает только те действия, у которых нет своего хендлера."""
+
+    async def __call__(self, callback: CallbackQuery) -> bool:  # noqa: D102
+        action = C.action(callback.data or "")
+        return action not in SPECIFIC_ACTIONS
+
+
+@router.callback_query(F.data.startswith(C.S_EDIT + ":"), NotSpecificAction())
 async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     """Навигация по списку сообщений и открытие экранов редактора."""
     action = C.action(callback.data)

@@ -1423,6 +1423,76 @@ class _FakeState:
         self.data = {}
 
 
+@step("Маршрутизация кнопок: у каждого действия свой хендлер")
+def check_callback_routing() -> str:
+    """Регрессия: catch-all-хендлер перехватывал чужие кнопки.
+
+    ``on_editor`` зарегистрирован первым и фильтровался по префиксу
+    ``ed:``, поэтому перехватывал ВСЕ остальные действия редактора:
+    «Готово», «Предпросмотр», «Сохранить», «Удалить», «Настройки»,
+    «Очистить», выбор реакции/типа/времени. Вместо своей логики они
+    падали в обработку сообщения и отвечали «Сообщение не найдено».
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.handlers import create as CR, editor as ED, my_chats as MC
+    from bot.utils import callbacks as C
+
+    async def hit(router, data: str) -> str:
+        user = User(id=1, is_bot=False, first_name="P")
+        msg = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=1, type="private"), from_user=user,
+        )
+        cb = CallbackQuery(
+            id="1", from_user=user, chat_instance="x", message=msg, data=data
+        )
+        for h in router.callback_query.handlers:
+            ok, _ = await h.check(cb, event_from_user=user)
+            if ok:
+                return getattr(h.callback, "__name__", "?")
+        return "НЕ ОБРАБАТЫВАЕТСЯ"
+
+    cases = [
+        (ED.router, C.cb(C.S_EDIT, "done", 1), "on_done"),
+        (ED.router, C.cb(C.S_EDIT, "preview", 1), "on_preview"),
+        (ED.router, C.cb(C.S_EDIT, "save", 1), "on_save"),
+        (ED.router, C.cb(C.S_EDIT, "drop", 1), "on_drop"),
+        (ED.router, C.cb(C.S_EDIT, "open_done", 1), "on_open_done"),
+        (ED.router, C.cb(C.S_EDIT, "clear", 1), "on_clear_messages"),
+        (ED.router, C.cb(C.S_EDIT, "setopt", "time", 1), "on_set_option"),
+        (ED.router, C.cb(C.S_EDIT, "setstyle", "telegram", 1), "on_set_style"),
+        (ED.router, C.cb(C.S_EDIT, "setdisc", "EN", 1), "on_set_disclaimer"),
+        (ED.router, C.cb(C.S_EDIT, "settime", "now", 0, 1), "on_set_time"),
+        (ED.router, C.cb(C.S_EDIT, "manualtime", 0, 1), "on_manual_time"),
+        (ED.router, C.cb(C.S_EDIT, "pickauthor", 0, "new", -1, 1), "on_pick_author"),
+        # Эти по-прежнему обслуживает общий on_editor
+        (ED.router, C.cb(C.S_EDIT, "open", 0, 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "list", 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "add", 0, 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "setreact", "X", 0, 1), "on_editor"),
+        # Участники и «Мои переписки»
+        (CR.router, C.cb(C.S_PART, "open", 0, 1), "on_participant"),
+        (CR.router, C.cb(C.S_PART, "next", 1), "on_participant"),
+        (MC.router, C.cb(C.S_MY, "open", 1), "on_my_chats"),
+        (MC.router, C.cb(C.S_MY, "cancel_del"), "on_my_chats"),
+    ]
+
+    async def run() -> str:
+        wrong = []
+        for router, data, expected in cases:
+            actual = await hit(router, data)
+            if actual != expected:
+                wrong.append(f"{data}: ожидали {expected}, сработал {actual}")
+        assert not wrong, "; ".join(wrong)
+        return f"{len(cases)} кнопок — каждая попала в свой хендлер"
+
+    return asyncio.run(run())
+
+
 @step("Ввод текста и выбор времени (регрессия из логов)")
 def check_time_flow_regression() -> str:
     """Сценарий из логов: написать текст → нажать «Текущее время».
@@ -1742,6 +1812,7 @@ def main() -> int:
     check_database_flow()
 
     section("Пользовательский сценарий (регрессии)")
+    check_callback_routing()
     check_time_flow_regression()
     check_user_journey()
 
