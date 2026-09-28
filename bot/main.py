@@ -171,7 +171,10 @@ async def main() -> int:
         while True:
             try:
                 if attempt:
-                    delay = min(60, 2 ** min(attempt, 5))
+                    # Рост паузы: 2, 4, 8, 16, 32, 60, 60…
+                    # Раньше min(attempt, 5) навсегда застревал на 32 с,
+                    # хотя внешний min(60, …) обещал потолок 60.
+                    delay = min(60, 2 ** min(attempt, 6))
                     logger.warning(
                         "Повтор через %s с (попытка %s).", delay, attempt + 1
                     )
@@ -189,8 +192,20 @@ async def main() -> int:
             except RETRYABLE as exc:
                 attempt += 1
                 set_status(telegram=f"error: {type(exc).__name__}")
-                logger.error("Сбой соединения с Telegram: %s: %s",
-                             type(exc).__name__, exc)
+                # Не засоряем лог сотнями одинаковых строк: подробно пишем
+                # первые попытки, дальше — краткое напоминание с интервалом.
+                if attempt <= 3 or attempt % 10 == 0:
+                    logger.error(
+                        "Сбой соединения с Telegram (попытка %s): %s: %s",
+                        attempt, type(exc).__name__, exc,
+                    )
+                if attempt == 5:
+                    logger.error(
+                        "Telegram API недоступен из этой сети уже 5 попыток подряд. "
+                        "Бот продолжает работать и подключится сам, как только сеть "
+                        "станет доступна. Если это не так — укажите прокси: "
+                        "TELEGRAM_PROXY=socks5://логин:пароль@хост:порт"
+                    )
             except Exception as exc:  # noqa: BLE001
                 # Непредвиденная ошибка: логируем с трассировкой, но процесс
                 # не убиваем — платформа не должна перезапускать контейнер

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bot.middleware import get_services, get_db_user
 import logging
 
 from aiogram import F, Router
@@ -33,10 +34,10 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT]
 
-    limits = message.data["services"]["limits"]
-    users = message.data["services"]["users"]
-    chats = message.data["services"]["chats"]
-    user = message.data["db_user"]
+    limits = get_services(message.data)["limits"]
+    users = get_services(message.data)["user"]
+    chats = get_services(message.data)["chats"]
+    user = get_db_user(message.data)
 
     if not ai_service.enabled:
         await message.answer(T.HELP_AI_DISABLED, parse_mode=screens.PARSE_MODE)

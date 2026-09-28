@@ -16,6 +16,7 @@ from bot.keyboards import editor as EK
 from bot.keyboards import texts as T
 from bot.schemas import Message as Msg
 from bot.schemas import MessageKind
+from bot.middleware import get_services, get_db_user, is_premium
 from bot.services import chat_service as CS
 from bot.services.render_service import render_service
 from bot.states import Flow
@@ -80,7 +81,7 @@ async def _require_chat(target, state: FSMContext):
     if chat_id < 0:
         raise ChatNotFoundError()
     event = target if hasattr(target, "data") else target.message
-    chats = event.data["services"]["chats"]
+    chats = get_services(event.data)["chats"]
     config = await chats.get_config(event.from_user.id, chat_id)
     return chat_id, config, event.from_user.id
 
@@ -96,7 +97,7 @@ async def _save_and_back(
 ) -> None:
     """Сохранить конфиг и вернуться к списку сообщений."""
     event = target if hasattr(target, "data") else target.message
-    await event.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(event.data)["chats"].save(user_id, chat_id, config)
     await state.set_state(Flow.editor)
     await show_editor(target, config, chat_id, state, page, header=header)
 
@@ -388,7 +389,7 @@ async def on_pick_author(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     kind = str(data.get("kind", "text"))
     reply_to = data.get("reply_to")
-    chats = callback.data["services"]["chats"]
+    chats = get_services(callback.data)["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
 
     if action == "change" and 0 <= index < len(config.messages):
@@ -420,7 +421,7 @@ async def on_set_time(callback: CallbackQuery, state: FSMContext) -> None:
     """Установка текущего времени."""
     chat_id = C.arg_int(callback.data, 1, -1)
     index = C.arg_int(callback.data, 2, -1)
-    chats = callback.data["services"]["chats"]
+    chats = get_services(callback.data)["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
 
     if action_is_new(index):
@@ -475,7 +476,7 @@ async def on_manual_time_input(message: Message, state: FSMContext) -> None:
         )
         return
 
-    chats = message.data["services"]["chats"]
+    chats = get_services(message.data)["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
     if index < 0:
         await _commit_message(message, state, config, chat_id, message.from_user.id,
@@ -513,11 +514,12 @@ async def _commit_message(
         message.side = 0
         message.author_index = 0
 
-    event = target if hasattr(target, "data") else target.message
-    limits = event.data["services"]["limits"]
-    db_user = event.data.get("db_user")
-    premium = bool(getattr(db_user, "is_premium", False))
-    max_messages = limits.max_messages(premium)
+    # Сервисы берём из .data того же объекта (Message или CallbackQuery).
+    # Раньше здесь стояло hasattr(target, "data"): для Message это всегда
+    # False (у Message нет поля data), а для CallbackQuery — всегда True
+    # (поле есть, но это строка), поэтому ветка выбиралась неверно.
+    limits = get_services(target.data)["limits"]
+    max_messages = limits.max_messages(is_premium(target.data))
 
     if len(config.messages) >= max_messages:
         await screens.notify(
@@ -561,7 +563,7 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
         )
         return
 
-    chats = message.data["services"]["chats"]
+    chats = get_services(message.data)["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
     kind = str(data.get("kind", "text"))
 
@@ -610,7 +612,7 @@ async def on_media_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     chat_id = int(data.get("chat_id", -1))
     index = int(data.get("message_index", -1))
-    chats = message.data["services"]["chats"]
+    chats = get_services(message.data)["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
 
     if not (0 <= index < len(config.messages)):
@@ -636,7 +638,7 @@ async def on_time_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     kind = str(data.get("kind", "text"))
 
-    chats = message.data["services"]["chats"]
+    chats = get_services(message.data)["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
 
     if kind == "forward":
@@ -673,11 +675,11 @@ async def _send_render(
     caption: str, keyboard, header: str = "",
 ) -> bool:
     """Сгенерировать изображение с учётом лимитов и отправить его."""
-    limits = target.data["services"]["limits"]
-    users = target.data["services"]["users"]
-    chats = target.data["services"]["chats"]
-    db_user = target.data.get("db_user")
-    premium = bool(getattr(db_user, "is_premium", False))
+    services = get_services(target.data)
+    limits = services["limits"]
+    users = services["user"]
+    chats = services["chats"]
+    premium = is_premium(target.data)
 
     check = await limits.check_image(user_id, premium)
     if not check:
@@ -732,7 +734,7 @@ async def on_preview(callback: CallbackQuery, state: FSMContext) -> None:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return
 
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     ok = await _send_render(
         callback, state, config, chat_id, user_id,
         "👀 <b>Предпросмотр</b>\n\nЭто фиктивная переписка для юмора и контента.",
@@ -754,7 +756,7 @@ async def on_done(callback: CallbackQuery, state: FSMContext) -> None:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return
 
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     ok = await _send_render(
         callback, state, config, chat_id, user_id,
         "✅ <b>Готово.</b>\n\n"
@@ -789,7 +791,7 @@ async def on_save(callback: CallbackQuery, state: FSMContext) -> None:
     except NoMessagesError as exc:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return
-    chats = callback.data["services"]["chats"]
+    chats = get_services(callback.data)["chats"]
     chat = await chats.finish(user_id, chat_id, config)
     await screens.show(
         callback,
@@ -804,7 +806,7 @@ async def on_save(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_drop(callback: CallbackQuery, state: FSMContext) -> None:
     """Удалить переписку."""
     chat_id = C.arg_int(callback.data, 0, -1)
-    chats = callback.data["services"]["chats"]
+    chats = get_services(callback.data)["chats"]
     if chat_id >= 0:
         try:
             await chats.delete(callback.from_user.id, chat_id)
@@ -844,7 +846,7 @@ async def on_set_option(callback: CallbackQuery, state: FSMContext) -> None:
     chat_id, config, user_id = await _require_chat(callback, state)
 
     if option == "style":
-        premium = bool(getattr(callback.data.get("db_user"), "is_premium", False))
+        premium = bool(is_premium(callback.data))
         await screens.show(
             callback, "🎨 <b>Стиль интерфейса</b>", style_picker(chat_id, config.style, premium)
         )
@@ -863,7 +865,7 @@ async def on_set_option(callback: CallbackQuery, state: FSMContext) -> None:
         await screens.safe_answer(callback, "Неизвестная настройка.", alert=True)
         return
     setattr(config.settings, field, not getattr(config.settings, field))
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     await screens.show(callback, T.chat_summary(config), chat_settings_menu(chat_id))
 
 
@@ -879,12 +881,12 @@ async def on_set_style(callback: CallbackQuery, state: FSMContext) -> None:
     if definition is None:
         await screens.safe_answer(callback, "Неизвестный стиль.", alert=True)
         return
-    premium = bool(getattr(callback.data.get("db_user"), "is_premium", False))
+    premium = bool(is_premium(callback.data))
     if definition.premium_only and not premium:
         await screens.safe_answer(callback, "Стиль доступен в Premium.", alert=True)
         return
     config.style = style
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     await screens.show(
         callback,
         f"🎨 Стиль изменён на <b>{definition.title}</b>.",
@@ -899,7 +901,7 @@ async def on_set_disclaimer(callback: CallbackQuery, state: FSMContext) -> None:
 
     chat_id, config, user_id = await _require_chat(callback, state)
     config.disclaimer = DISCLAIMERS.get(C.arg(callback.data, 0), "FICTIONAL CHAT")
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     await screens.show(
         callback,
         f"⚠️ Пометка: <code>{TX.esc(config.disclaimer)}</code>",
@@ -912,7 +914,7 @@ async def on_clear_messages(callback: CallbackQuery, state: FSMContext) -> None:
     """Очистить все сообщения переписки."""
     chat_id, config, user_id = await _require_chat(callback, state)
     config.messages.clear()
-    await callback.data["services"]["chats"].save(user_id, chat_id, config)
+    await get_services(callback.data)["chats"].save(user_id, chat_id, config)
     await state.set_state(Flow.editor)
     await show_editor(callback, config, chat_id, state, 0, header="🗑 Сообщения очищены.")
 

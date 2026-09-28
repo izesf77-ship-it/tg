@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bot.middleware import get_services, get_db_user, get_context
 import logging
 
 from aiogram import F, Router
@@ -24,9 +25,9 @@ router = Router(name="menus")
 
 async def open_settings(target, state: FSMContext) -> None:
     """Экран настроек бота."""
-    limits = target.data["services"]["limits"]
-    user = target.data["db_user"]
-    db_user = target.data["services"]["users"]
+    limits = get_services(target.data)["limits"]
+    user = get_db_user(target.data)
+    db_user = get_services(target.data)["user"]
     from bot.services.ai_service import ai_service
 
     user_id = target.from_user.id
@@ -86,7 +87,7 @@ async def on_menu(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
     """Настройки бота."""
     action = C.action(callback.data)
-    limits = callback.data["services"]["limits"]
+    limits = get_services(callback.data)["limits"]
     user_id = callback.from_user.id
 
     if action == "limits":
@@ -123,7 +124,7 @@ async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "wipe_yes":
-        session = callback.data["session"]
+        session = get_context(callback.data).session
         from bot.models import Chat, UsageEvent
         from sqlalchemy import delete
 

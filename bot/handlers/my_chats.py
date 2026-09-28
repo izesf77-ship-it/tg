@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bot.middleware import get_services
 import logging
 
 from aiogram import F, Router
@@ -24,7 +25,7 @@ PAGE_SIZE = MK.PAGE_SIZE
 
 async def open_my_chats(target, state: FSMContext, page: int = 0) -> None:
     """Показать список сохранённых переписок."""
-    chats = target.data["services"]["chats"]
+    chats = get_services(target.data)["chats"]
     total = await chats.count_saved(target.from_user.id)
     items = await chats.list_saved(
         target.from_user.id, limit=PAGE_SIZE, offset=page * PAGE_SIZE
@@ -70,7 +71,7 @@ def _open_keyboard(chat_id: int, is_draft: bool):
 async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
     """Действия со списком переписок."""
     action = C.action(callback.data)
-    chats = callback.data["services"]["chats"]
+    chats = get_services(callback.data)["chats"]
     user_id = callback.from_user.id
 
     if action == "noop":

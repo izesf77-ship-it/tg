@@ -189,6 +189,18 @@ def main() -> int:
     log("Telegram Chat Constructor Bot — запуск в контейнере")
     log("=" * 54)
 
+    # HTTP-сервис поднимаем ПЕРВЫМ, до любых сетевых проверок.
+    # Платформа проверяет порт сразу после старта контейнера, а проверка
+    # связи с Telegram занимает до 20 секунд. Без раннего старта порт
+    # считался бы «не отвечающим», и домен отдавал бы 502.
+    try:
+        from bot.health import set_status, start_health_server
+
+        start_health_server()
+        set_status(bot="starting", telegram="unknown")
+    except Exception as exc:  # noqa: BLE001 # pragma: no cover
+        log(f"HTTP-сервис не поднялся: {type(exc).__name__}: {exc}")
+
     token = (os.environ.get("BOT_TOKEN") or "").strip()
     if not token:
         log("ОШИБКА: BOT_TOKEN не задан. Задайте переменную окружения BOT_TOKEN.")

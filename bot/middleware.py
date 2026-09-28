@@ -13,9 +13,59 @@ from bot.services import chat_service, limit_service, user_service
 
 logger = logging.getLogger(__name__)
 
+CTX_KEY = "bot_context"
+
+
+class _Context:
+    """Данные сессии, доступные хендлерам."""
+
+    __slots__ = ("session", "services", "db_user")
+
+    def __init__(self, session, services, db_user) -> None:
+        self.session = session
+        self.services = services
+        self.db_user = db_user
+
+
+def get_context(data: Dict[str, Any]) -> _Context:
+    """Достать контекст из данных события.
+
+    aiogram не кладёт ``data`` в объект Message, а поле ``data`` у
+    CallbackQuery занято строкой callback-данных. Поэтому хендлеры должны
+    получать сервисы отсюда, а не через ``event.data``.
+    """
+    ctx = data.get(CTX_KEY)
+    if ctx is None:
+        # Страховка на случай прямого вызова хендлера в тестах
+        ctx = _Context(
+            session=data.get("session"),
+            services=data.get("services") or {},
+            db_user=data.get("db_user"),
+        )
+    return ctx
+
+
+def get_services(data: Dict[str, Any]) -> Dict[str, Any]:
+    return get_context(data).services
+
+
+def get_db_user(data: Dict[str, Any]):
+    return get_context(data).db_user
+
+
+def is_premium(data: Dict[str, Any]) -> bool:
+    """Premium-статус текущего пользователя (безопасно)."""
+    return bool(getattr(get_db_user(data), "is_premium", False))
+
 
 class DbSessionMiddleware(BaseMiddleware):
-    """Открывает сессию БД и кладёт сервисы в data на время обработки."""
+    """Открывает сессию БД и кладёт сервисы в data на время обработки.
+
+    ВАЖНО: доступ к данным идёт только через ``bot.middleware.get_context``,
+    а не через ``event.data``. У aiogram у ``Message`` нет поля ``data``,
+    а у ``CallbackQuery`` поле ``data`` — это строка callback-данных,
+    поэтому обращение вида ``message.data["services"]`` всегда падало.
+    """
 
     async def __call__(
         self,
@@ -35,19 +85,28 @@ class DbSessionMiddleware(BaseMiddleware):
             limit_service.bind(session)
             chat_service.bind(session)
             data["session"] = session
+            # Ключи сервисов: "chats", "limits", "user" (без "users").
             data["services"] = {
                 "user": user_service,
                 "limits": limit_service,
                 "chats": chat_service,
             }
+            # Единая точка доступа для хендлеров
+            data[CTX_KEY] = _Context(
+                session=session,
+                services=data["services"],
+                db_user=None,
+            )
             try:
                 user = await user_service.register(tg_user)
             except Exception as exc:  # noqa: BLE001 - БД не должна ронять бота
                 logger.exception("Не удалось зарегистрировать пользователя")
-                data["session"] = session
                 return await handler(event, data)
 
             data["db_user"] = user
+            data[CTX_KEY] = _Context(
+                session=session, services=data["services"], db_user=user
+            )
             if user.is_banned:
                 logger.info("Попытка входа заблокированного пользователя %s", user.id)
                 await _notify_banned(event)
@@ -108,4 +167,11 @@ async def _send_error(event: TelegramObject, text: str) -> None:
         logger.debug("Не удалось отправить сообщение об ошибке: %s", exc)
 
 
-__all__ = ["DbSessionMiddleware", "ErrorMiddleware"]
+__all__ = [
+    "DbSessionMiddleware",
+    "ErrorMiddleware",
+    "get_context",
+    "get_services",
+    "get_db_user",
+    "is_premium",
+]

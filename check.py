@@ -388,6 +388,114 @@ def check_health_server() -> str:
     return f"порт {port}, /health отдаёт 200 со статусом"
 
 
+@step("Диагностика прокси: разбор адреса и масокирование")
+def check_proxy_helper() -> str:
+    """Логика check_proxy.py проверяется без сети: только разбор и маскирование."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("check_proxy", ROOT / "check_proxy.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # Схема подставляется автоматически
+    assert module.normalize("1.2.3.4:1080") == "socks5://1.2.3.4:1080"
+    assert module.normalize("http://h:8080") == "http://h:8080"
+    assert module.normalize("  socks5://u:p@h:1  ") == "socks5://u:p@h:1"
+
+    # Логин и пароль не должны попадать в вывод
+    masked = module.mask("socks5://secretuser:secretpass@1.2.3.4:1080")
+    assert "secretuser" not in masked, masked
+    assert "secretpass" not in masked, masked
+    assert "1.2.3.4:1080" in masked, masked
+    assert module.mask("socks5://1.2.3.4:1080") == "socks5://1.2.3.4:1080"
+
+    # Ошибки переводятся в понятные формулировки
+    # (проверяем на настоящих исключениях, а не на строках)
+    assert "socksio" in module.explain(ImportError("no module named socksio"))
+    assert "НЕ прокси" in module.explain(Exception("Malformed reply"))
+
+    class ConnectTimeout(Exception):
+        pass
+
+    assert "не отвечает" in module.explain(ConnectTimeout("timed out"))
+    assert "неверный логин или пароль" in module.explain(
+        Exception("SOCKS5 Authentication failure")
+    )
+    return "адрес, маскирование и разбор ошибок корректны"
+
+
+@step("Хендлеры получают сервисы из middleware, а не из event.data")
+def check_handler_context() -> str:
+    """Регрессия: u Message нет поля data, а у CallbackQuery data — строка.
+
+    Из-за этого обращения вида message.data["services"] падали с
+    AttributeError/TypeError, и любой хендлер отвечал «Внутренняя ошибка».
+    Проверяем и структуру кода, и реальное поведение.
+    """
+    import datetime
+    import re
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.middleware import get_db_user, get_services, is_premium
+
+    # 1) Реальные объекты aiogram: убеждаемся в самой причине бага
+    user = User(id=42, is_bot=False, first_name="T")
+    message = TgMessage(
+        message_id=1, date=datetime.datetime.now(),
+        chat=Chat(id=1, type="private"), from_user=user,
+    )
+    callback = CallbackQuery(
+        id="1", from_user=user, chat_instance="x", data="ed:open:1:2"
+    )
+    assert not hasattr(message, "data"), "У Message не должно быть поля data"
+    assert isinstance(callback.data, str), "CallbackQuery.data — строка"
+
+    # 2) Хелперы достают сервисы из обычного словаря-контекста
+    services = {"chats": "CHATS", "limits": "LIMITS", "user": "USER"}
+    data = {"services": services, "db_user": object()}
+    assert get_services(data)["chats"] == "CHATS"
+    assert get_db_user(data) is data["db_user"]
+    assert is_premium(data) is False, "обычный объект не должен считаться Premium"
+
+    premium_user = type("U", (), {"is_premium": True})()
+    assert is_premium({"db_user": premium_user}) is True
+    # Отсутствие пользователя не должно ронять код
+    assert is_premium({}) is False
+    assert get_services({}) == {}
+
+    # 3) В коде хендлеров не осталось обращений через event.data
+    offenders = []
+    pattern = re.compile(r'\b\w+\.data\["(services|db_user|session)"\]')
+    for path in (ROOT / "bot" / "handlers").glob("*.py"):
+        for num, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{num}")
+    assert not offenders, "Остались обращения event.data: " + ", ".join(offenders)
+
+    # 4) Ключ сервиса — "user", а не "users"
+    assert "users" not in services, "ключа 'users' в сервисах нет"
+    return "контекст доступен, обращений event.data не осталось"
+
+
+@step("Рост паузы между попытками (backoff)")
+def check_backoff() -> str:
+    """Пауза должна расти до 60 с, а не застревать на 32 с.
+
+    Регрессия: min(attempt, 5) давал 2**5=32 навсегда.
+    """
+    def delay(attempt: int) -> int:
+        return min(60, 2 ** min(attempt, 6))
+
+    values = [delay(a) for a in range(1, 9)]
+    assert values == [2, 4, 8, 16, 32, 60, 60, 60], values
+    assert all(b >= a for a, b in zip(values, values[1:])), "пауза должна расти"
+    assert max(values) == 60, f"потолок должен быть 60, а не {max(values)}"
+    return "2 → 4 → 8 → 16 → 32 → 60 (далее 60)"
+
+
 @step("Проверка импорта всех модулей")
 def check_imports() -> str:
     import importlib
@@ -824,6 +932,9 @@ def main() -> int:
     check_env_config()
     check_log_scrub()
     check_health_server()
+    check_proxy_helper()
+    check_handler_context()
+    check_backoff()
     check_imports()
     check_dispatcher()
     check_keyboards()

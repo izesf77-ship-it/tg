@@ -12,6 +12,7 @@ from aiogram.types import Message
 from bot import screens
 from bot.keyboards import common as KB
 from bot.keyboards import texts as T
+from bot.middleware import get_services
 from bot.services import chat_service as CS
 from bot.states import Flow
 from bot.utils import text_utils as TX
@@ -32,8 +33,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(T.WELCOME, reply_markup=KB.main_menu())
 
     # Автосохранение: предлагаем продолжить черновик
-    chats = message.data["services"]["chats"]
-    draft = await chats.get_draft(message.from_user.id)
+    # Сервисы берём из middleware-данных, а НЕ из message.data:
+    # у Message нет такого поля (у CallbackQuery оно занято строкой).
+    chats = get_services(message.data)["chats"]
+    try:
+        draft = await chats.get_draft(message.from_user.id)
+    except Exception as exc:  # noqa: BLE001 - черновик не должен ломать /start
+        logger.warning("Не удалось получить черновик: %s", exc)
+        draft = None
     if draft is not None and draft.message_count > 0:
         await message.answer(
             "📌 <b>У вас есть незавершённая переписка</b>\n\n"

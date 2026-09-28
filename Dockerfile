@@ -89,7 +89,7 @@ WORKDIR /app
 # Код проекта
 COPY bot/ ./bot/
 COPY fonts/ ./fonts/
-COPY check.py run.py docker-entrypoint.py requirements.txt ./
+COPY check.py check_proxy.py run.py docker-entrypoint.py requirements.txt ./
 
 # Непривилегированный пользователь.
 # ВАЖНО: создание пользователя должно идти ДО chown, иначе сборка падает с
