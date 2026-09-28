@@ -17,7 +17,7 @@ from bot.keyboards import texts as T
 from bot.schemas import Message as Msg
 from bot.schemas import MessageKind
 from bot.middleware import get_services, get_db_user, is_premium
-from bot.services import chat_service as CS
+from bot.services.chat_service import ChatService
 from bot.services.render_service import render_service
 from bot.states import Flow
 from bot.utils import callbacks as C
@@ -293,7 +293,7 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "del":
-        CS.ChatService.delete_message(config, message.id)
+        ChatService.delete_message(config, message.id)
         await _save_and_back(
             callback, state, config, chat_id, user_id, page, "🗑 Сообщение удалено."
         )
@@ -731,7 +731,7 @@ async def on_preview(callback: CallbackQuery, state: FSMContext) -> None:
     """Предпросмотр: сгенерировать и отправить изображение."""
     chat_id, config, user_id = await _require_chat(callback, state)
     try:
-        CS.ChatService.require_content(config)
+        ChatService.require_content(config)
     except NoMessagesError as exc:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return
@@ -753,7 +753,7 @@ async def on_done(callback: CallbackQuery, state: FSMContext) -> None:
     """Готовое изображение переписки."""
     chat_id, config, user_id = await _require_chat(callback, state)
     try:
-        CS.ChatService.require_content(config)
+        ChatService.require_content(config)
     except NoMessagesError as exc:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return
@@ -789,7 +789,7 @@ async def on_save(callback: CallbackQuery, state: FSMContext) -> None:
     """Сохранить переписку в «Мои переписки»."""
     chat_id, config, user_id = await _require_chat(callback, state)
     try:
-        CS.ChatService.require_content(config)
+        ChatService.require_content(config)
     except NoMessagesError as exc:
         await screens.safe_answer(callback, exc.user_message, alert=True)
         return

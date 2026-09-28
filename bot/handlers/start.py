@@ -13,7 +13,6 @@ from bot import screens
 from bot.keyboards import common as KB
 from bot.keyboards import texts as T
 from bot.middleware import get_services
-from bot.services import chat_service as CS
 from bot.states import Flow
 from bot.utils import text_utils as TX
 from bot.utils.time_utils import today_label

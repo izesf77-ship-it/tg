@@ -701,6 +701,99 @@ def check_callback_chat_id() -> str:
     return f"{checked} кнопок участников + {len(cases)} форматов — chat_id везде верный"
 
 
+@step("Выбор участника открывает карточку (интеграционно)")
+def check_participant_flow() -> str:
+    """Регрессия: ``from bot.services import chat_service`` даёт синглтон None,
+    а нужен класс ChatService. Ошибка возникала при нажатии на участника.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine
+    from bot.handlers.create import on_participant
+    from bot.middleware import DbSessionMiddleware
+    from bot.utils import callbacks as C
+
+    answered: list = []
+    shown: list = []
+
+    async def fake_safe_answer(event, text=None, alert=False, **kw):
+        answered.append(text or "")
+        return None
+
+    async def fake_show(event, text, keyboard=None, **kw):
+        shown.append(str(text)[:60])
+        return None
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052880
+        tg_user = User(id=uid, is_bot=False, first_name="PAUK88")
+        message = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=uid, type="private"), from_user=tg_user,
+        )
+
+        # Реальная переписка в БД: её id подставляем в callback_data
+        from bot.database.engine import session_scope
+        from bot.database.repositories import ChatRepository
+        from bot.schemas import ChatConfig
+
+        async with session_scope() as session:
+            chat = await ChatRepository(session).create(
+                user_id=uid, config=ChatConfig(title="Тест", style="telegram")
+            )
+            real_chat_id = chat.id
+
+        callback = CallbackQuery(
+            id="1", from_user=tg_user, chat_instance="x",
+            message=message, data=C.cb(C.S_PART, "open", 0, real_chat_id),
+        )
+
+        # Заглушки экрана: проверяем именно разбор аргументов
+        import bot.screens as SC
+
+        SC.safe_answer = fake_safe_answer
+        SC.show = fake_show
+
+        class _St:
+            async def set_state(self, s):
+                return None
+
+            async def update_data(self, **kw):
+                return None
+
+        errors: list = []
+
+        async def handler(event, data):
+            try:
+                await on_participant(event, _St())
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            return None
+
+        mw = DbSessionMiddleware()
+        await mw(handler, callback, {"event_from_user": tg_user})
+
+        if errors:
+            return "ОШИБКА: " + "; ".join(errors)
+        if answered:
+            return "хендлер ответил отказом: " + "; ".join(answered)
+        if not shown:
+            return "карточка участника не показана"
+        return f"ok: {shown[0][:34]!r}"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail.startswith("ok"), detail
+    return detail
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1157,6 +1250,7 @@ def main() -> int:
     check_handler_context()
     check_start_handler()
     check_callback_chat_id()
+    check_participant_flow()
     check_backoff()
     check_imports()
     check_dispatcher()

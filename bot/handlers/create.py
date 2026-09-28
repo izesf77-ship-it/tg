@@ -15,7 +15,7 @@ from bot.keyboards import common as KB
 from bot.keyboards import create as CK
 from bot.keyboards import texts as T
 from bot.middleware import get_services, get_db_user
-from bot.services import chat_service as CS
+from bot.services.chat_service import ChatService
 from bot.states import Flow
 from bot.utils import callbacks as C
 from bot.utils import files as FILES
@@ -180,7 +180,7 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "open":
         index = C.arg_int(callback.data, 0)
         config = await chats.get_config(user_id, chat_id)
-        participant = CS.ChatService.participant(config, index)
+        participant = ChatService.participant(config, index)
         if participant is None:
             await screens.safe_answer(callback, "Участник не найден.", alert=True)
             return
@@ -197,7 +197,7 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
         index = C.arg_int(callback.data, 0)
         field = C.arg(callback.data, 1)
         config = await chats.get_config(user_id, chat_id)
-        participant = CS.ChatService.participant(config, index)
+        participant = ChatService.participant(config, index)
         if participant is None:
             await screens.safe_answer(callback, "Участник не найден.", alert=True)
             return
@@ -239,7 +239,7 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
         index = C.arg_int(callback.data, 0)
         field = C.arg(callback.data, 1)
         config = await chats.get_config(user_id, chat_id)
-        participant = CS.ChatService.participant(config, index)
+        participant = ChatService.participant(config, index)
         if participant is not None:
             if field == "name" and not participant.name:
                 participant.name = f"Участник {index + 1}"
@@ -263,7 +263,7 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
                 name=f"Участник {index + 1}", side=index % 2, status="в сети"
             )
             await chats.save(user_id, chat_id, config)
-        participant = CS.ChatService.participant(config, index)
+        participant = ChatService.participant(config, index)
         await screens.show(
             callback,
             T.participant_screen(index, participant),
@@ -285,7 +285,7 @@ async def on_participant_photo(
     index = int(data.get("participant_index", 0))
     chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
-    participant = CS.ChatService.participant(config, index)
+    participant = ChatService.participant(config, index)
     if participant is None:
         await message.answer("Участник не найден.", reply_markup=KB.main_menu())
         await state.clear()
@@ -334,7 +334,7 @@ async def on_participant_text(message: Message, state: FSMContext) -> None:
 
     chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
-    participant = CS.ChatService.participant(config, index)
+    participant = ChatService.participant(config, index)
     if participant is None:
         await message.answer("Участник не найден.", reply_markup=KB.main_menu())
         await state.clear()
