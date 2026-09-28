@@ -69,6 +69,43 @@ def main() -> int:
     return 0 if not PROBLEMS else 1
 
 
+def check_user_order(text: str) -> None:
+    """Пользователь должен создаваться раньше, чем на него ссылается chown.
+
+    Регрессия: chown -R appuser:appuser шёл ДО useradd, и сборка падала с
+    «chown: appuser: No such file or user».
+    """
+    # Работаем только с финальным этапом — там, где реально создаётся пользователь.
+    froms = [m.start() for m in re.finditer(r"^FROM\s", text, re.MULTILINE | re.IGNORECASE)]
+    if not froms:
+        return
+    stage = text[froms[-1]:]
+    # Комментарии вырезаем: в них слова «chown»/«useradd» встречаются как
+    # примеры в тексте и дают ложные срабатывания.
+    stage = "\n".join(
+        line for line in stage.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    user_match = re.search(r"^USER\s+(\S+)", stage, re.MULTILINE)
+    if not user_match:
+        return  # финальный этап работает от root — chown не требуется
+    user_name = user_match.group(1)
+    creates = re.search(r"(useradd|adduser|groupadd)[^\n]*" + re.escape(user_name), stage)
+    chowns = re.search(r"chown[^\n]*" + re.escape(user_name), stage)
+
+    if creates is None:
+        fail(f"Пользователь {user_name} используется, но не создаётся в финальном этапе")
+        return
+    ok(f"Пользователь {user_name} создаётся в финальном этапе")
+
+    if chowns is None:
+        ok(f"chown для {user_name} не используется — конфликта прав нет")
+    elif creates.start() < chowns.start():
+        ok(f"Порядок верен: {user_name} создан раньше chown")
+    else:
+        fail(f"chown для {user_name} идёт ДО его создания — сборка упадёт")
+
+
 def check_dockerfile(path: Path) -> None:
     """Проверки Dockerfile."""
     text = path.read_text(encoding="utf-8")
@@ -94,6 +131,8 @@ def check_dockerfile(path: Path) -> None:
         ok("USER задан (контейнер работает не от root)")
     else:
         fail("Не задан непривилегированный USER")
+
+    check_user_order(text)
 
     if "PIP_NO_CACHE_DIR" in text:
         ok("Кэш pip отключён")

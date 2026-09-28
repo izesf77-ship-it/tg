@@ -41,19 +41,49 @@ def check_fonts() -> None:
 
 
 def check_data_dir() -> bool:
+    """Каталог данных должен существовать и быть доступным НА ЗАПИСЬ.
+
+    Частая проблема на хостингах: volume монтируется от root, и непривилегированный
+    пользователь не может писать в /app/data. Здесь это выявляется заранее и
+    выводится понятная подсказка.
+    """
     db_path = os.environ.get("DB_PATH", "/app/data/bot.sqlite3")
     directory = os.path.dirname(db_path) or "/app/data"
     try:
         os.makedirs(directory, exist_ok=True)
-        media = os.path.join(directory, "media")
-        renders = os.path.join(directory, "renders")
-        os.makedirs(media, exist_ok=True)
-        os.makedirs(renders, exist_ok=True)
-        log(f"Каталог данных готов: {directory}")
-        return True
+        for name in ("media", "renders"):
+            os.makedirs(os.path.join(directory, name), exist_ok=True)
     except OSError as exc:
         log(f"ОШИБКА: нет доступа к каталогу {directory}: {exc}")
+        _log_permission_hint(directory)
         return False
+
+    # Проверка реальной возможности записи (права каталога != возможность писать
+    # при запрещённом SELinux/AppArmor или read-only mount).
+    probe = os.path.join(directory, ".write_probe")
+    try:
+        with open(probe, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        os.remove(probe)
+    except OSError as exc:
+        log(f"ОШИБКА: каталог {directory} доступен только для чтения: {exc}")
+        _log_permission_hint(directory)
+        return False
+
+    log(f"Каталог данных готов и доступен для записи: {directory}")
+    return True
+
+
+def _log_permission_hint(directory: str) -> None:
+    """Подсказка для администратора хостинга."""
+    try:
+        uid, gid = os.getuid(), os.getgid()
+    except AttributeError:  # pragma: no cover — не POSIX
+        return
+    log("ПОДСКАЗКА: каталог данных смонтирован от другого пользователя.")
+    log(f"  контейнер работает как uid={uid}, gid={gid}, каталог: {directory}")
+    log("  Исправьте владельца на хосте:  chown -R 10001:10001 <путь-к-volume>")
+    log('  Либо запустите контейнер от root: добавьте user: "0:0" в compose')
 
 
 def run_selfcheck() -> None:

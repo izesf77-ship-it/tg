@@ -90,13 +90,22 @@ COPY bot/ ./bot/
 COPY fonts/ ./fonts/
 COPY check.py run.py docker-entrypoint.py requirements.txt ./
 
-# Каталоги для постоянных данных
-RUN mkdir -p /app/data/media /app/data/renders /app/output \
-    && chown -R appuser:appuser /app
+# Непривилегированный пользователь.
+# ВАЖНО: создание пользователя должно идти ДО chown, иначе сборка падает с
+# «chown: appuser: No such file or user».
+RUN set -eux; \
+    if ! id -u appuser >/dev/null 2>&1; then \
+        groupadd --gid 10001 appuser 2>/dev/null || true; \
+        useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash appuser; \
+    fi; \
+    id appuser
 
-# Непривилегированный пользователь
-RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app
+# Каталоги для постоянных данных (БД, фото, рендеры)
+RUN mkdir -p /app/data/media /app/data/renders /app/output
+
+# Смена владельца ПОСЛЕ создания пользователя
+RUN chown -R appuser:appuser /app
+
 USER appuser
 
 # Том для БД, медиа и рендеров (сохраняется между перезапусками)
