@@ -794,6 +794,89 @@ def check_participant_flow() -> str:
     return detail
 
 
+@step("Пометка «вымышленная переписка» выключена по умолчанию")
+def check_disclaimer_toggle() -> str:
+    """По умолчанию пометки нет, но её можно включить.
+
+    Регрессия: в рендерере был запасной ``or self.t.watermark_text``,
+    поэтому пометка появлялась даже при пустом значении.
+    """
+    from bot.generators import get_renderer
+    from bot.schemas import ChatConfig, Message, Participant
+
+    def build(disclaimer: str) -> ChatConfig:
+        config = ChatConfig(title="Тест", style="telegram")
+        config.participants = [
+            Participant(name="Алексей", side=0),
+            Participant(name="Алина", side=1),
+        ]
+        config.add_message(
+            Message(text="Привет", time="21:14", side=0, author_index=0)
+        )
+        config.add_message(
+            Message(text="Привет!", time="21:15", side=1, author_index=1)
+        )
+        config.disclaimer = disclaimer
+        return config
+
+    renderer = get_renderer("telegram")
+
+    # 1) По умолчанию пометка выключена
+    default_config = ChatConfig(title="Т", style="telegram")
+    default_config.add_message(Message(text="Привет", time="21:14", side=0))
+    assert default_config.disclaimer == "", (
+        f"по умолчанию ожидалась пустая пометка, а получено {default_config.disclaimer!r}"
+    )
+
+    # 2) Точная проверка: считаем реальные вызовы отрисовки пилюли
+    from bot.generators import drawing as D
+
+    calls: list = []
+    original = D.watermark_pill
+
+    def counting_pill(img, cx, cy, text, *args, **kwargs):
+        calls.append(text)
+        return original(img, cx, cy, text, *args, **kwargs)
+
+    D.watermark_pill = counting_pill
+    try:
+        renderer.render(build(""))
+        assert calls == [], f"без пометки пилюля не должна рисоваться: {calls}"
+
+        renderer.render(build("FICTIONAL CHAT"))
+        assert calls == ["FICTIONAL CHAT"], f"пометка не отрисована: {calls}"
+
+        calls.clear()
+        for value in ("", "   "):
+            renderer.render(build(value))
+        assert calls == [], f"пустая/пробельная пометка не должна рисоваться: {calls}"
+    finally:
+        D.watermark_pill = original
+
+    # 3) Высота изображения больше с пометкой (добавляется отступ)
+    off = renderer.render(build(""))
+    on = renderer.render(build("FICTIONAL CHAT"))
+    assert on.height > off.height, (
+        f"с пометкой должно быть выше: {on.height} <= {off.height}"
+    )
+
+    # 4) Пустое значение и None эквивалентны «выключено»
+    for value in ("", "   ", None):
+        img = renderer.render(build(value) if value is not None else build(""))
+        assert img.height > 0
+
+    # 5) Все варианты из списка рендерятся без ошибок
+    from bot.utils.callbacks import DISCLAIMERS
+
+    for key, text in DISCLAIMERS.items():
+        renderer.render(build(text))
+
+    return (
+        f"выкл: {off.width}x{off.height}, вкл: {on.width}x{on.height}, "
+        f"вариантов: {len(DISCLAIMERS)}"
+    )
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1251,6 +1334,7 @@ def main() -> int:
     check_start_handler()
     check_callback_chat_id()
     check_participant_flow()
+    check_disclaimer_toggle()
     check_backoff()
     check_imports()
     check_dispatcher()

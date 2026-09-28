@@ -261,7 +261,10 @@ class ChatConfig(BaseModel):
     settings: ChatSettings = Field(default_factory=ChatSettings)
     created_at: str = ""
     template: str = ""
-    disclaimer: str = "FICTIONAL CHAT"
+    # Пометка о вымышленном характере переписки.
+    # По умолчанию ВЫКЛЮЧЕНА (пустая строка) — включается в настройках
+    # переписки. Пустое значение означает: не рисовать пометку вовсе.
+    disclaimer: str = ""
 
     def ensure_participants(self) -> None:
         if not self.participants:

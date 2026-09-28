@@ -759,12 +759,19 @@ async def on_done(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await get_services()["chats"].save(user_id, chat_id, config)
+    # Текст подписи зависит от того, включена ли пометка
+    if (config.disclaimer or "").strip():
+        note = "На изображении есть пометка «FICTIONAL CHAT»."
+    else:
+        note = (
+            "Пометка на изображении выключена — включить её можно "
+            "в настройках переписки."
+        )
     ok = await _send_render(
         callback, state, config, chat_id, user_id,
         "✅ <b>Готово.</b>\n\n"
         "Это фиктивная переписка, созданная в конструкторе.\n\n"
-        "На изображении есть пометка FICTIONAL CHAT — это вымышленный "
-        "контент для юмора, мемов и контента.",
+        f"{note}",
         EK.done_keyboard(chat_id),
     )
     if ok:
@@ -832,11 +839,15 @@ SETTING_MAP = {
     "dividers": "date_dividers",
 }
 
-DISCLAIMERS = {
-    "FICTIONAL": "FICTIONAL CHAT",
-    "ВЫМЫШЛЕННАЯ": "ВЫМЫШЛЕННАЯ ПЕРЕПИСКА",
-    "FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА": "FICTIONAL CHAT · ВЫМЫШЛЕННАЯ ПЕРЕПИСКА",
-}
+@router.callback_query(F.data.startswith(C.S_EDIT + ":setdisc"))
+async def on_set_disclaimer(callback: CallbackQuery, state: FSMContext) -> None:
+    """Включение/выключение и смена текста пометки."""
+    from bot.keyboards.menus import chat_settings_menu
+
+    chat_id, config, user_id = await _require_chat(callback, state)
+    # NONE — выключить пометку; неизвестный ключ тоже трактуем как «без пометки»
+    config.disclaimer = C.DISCLAIMERS.get(C.arg(callback.data, 0), "")
+    await get_services()["chats"].save(user_id, chat_id, config)
 
 
 @router.callback_query(F.data.startswith(C.S_EDIT + ":setopt"))
@@ -892,21 +903,6 @@ async def on_set_style(callback: CallbackQuery, state: FSMContext) -> None:
     await screens.show(
         callback,
         f"🎨 Стиль изменён на <b>{definition.title}</b>.",
-        chat_settings_menu(chat_id),
-    )
-
-
-@router.callback_query(F.data.startswith(C.S_EDIT + ":setdisc"))
-async def on_set_disclaimer(callback: CallbackQuery, state: FSMContext) -> None:
-    """Смена текста пометки о вымышленном характере переписки."""
-    from bot.keyboards.menus import chat_settings_menu
-
-    chat_id, config, user_id = await _require_chat(callback, state)
-    config.disclaimer = DISCLAIMERS.get(C.arg(callback.data, 0), "FICTIONAL CHAT")
-    await get_services()["chats"].save(user_id, chat_id, config)
-    await screens.show(
-        callback,
-        f"⚠️ Пометка: <code>{TX.esc(config.disclaimer)}</code>",
         chat_settings_menu(chat_id),
     )
 

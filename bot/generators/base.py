@@ -539,8 +539,13 @@ class BaseRenderer:
             )
 
     def _paint_watermark(self, img: Image.Image, config: ChatConfig, total: int) -> None:
-        """Ненавязчивая пометка о вымышленном характере переписки."""
-        text = (config.disclaimer or self.t.watermark_text).strip()
+        """Ненавязчивая пометка о вымышленном характере переписки.
+
+        Рисуется ТОЛЬКО если пользователь её включил. Раньше здесь был
+        запасной вариант ``or self.t.watermark_text``, из-за которого
+        пометка появлялась даже при пустом значении.
+        """
+        text = (config.disclaimer or "").strip()
         if not text:
             return
         size = int(self.t.font_meta * 0.92)

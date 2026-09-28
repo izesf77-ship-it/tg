@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.keyboards.common import with_back
 from bot.models import Chat
 from bot.utils import callbacks as C
+from bot.utils.callbacks import DISCLAIMERS
 
 BACK_HOME = C.cb(C.S_MENU, "home")
 PAGE_SIZE = 5
@@ -115,7 +116,7 @@ def chat_settings_menu(chat_id: int) -> InlineKeyboardMarkup:
         ("tail", "🔻 Хвостики пузырей"),
         ("pattern", "🎭 Фоновый узор"),
         ("dividers", "📅 Разделители дат"),
-        ("disclaimer", "⚠️ Пометка FICTIONAL CHAT"),
+        ("disclaimer", "⚠️ Пометка «вымышленная переписка»"),
     ]
     for key, label in options:
         kb.row(
@@ -162,15 +163,25 @@ def style_picker(chat_id: int, current: str, premium: bool) -> InlineKeyboardMar
 
 
 def disclaimer_picker(chat_id: int, current: str) -> InlineKeyboardMarkup:
-    """Выбор текста пометки о вымышленном характере переписки."""
+    """Выбор пометки на изображении.
+
+    По умолчанию пометка выключена (пустая строка), но её можно включить
+    и выбрать один из вариантов текста.
+    """
     kb = InlineKeyboardBuilder()
     options = [
+        ("NONE", "🚫 Без пометки"),
         ("FICTIONAL", "🇬🇧 FICTIONAL CHAT"),
         ("ВЫМЫШЛЕННАЯ", "🇷🇺 ВЫМЫШЛЕННАЯ ПЕРЕПИСКА"),
         ("FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА", "🌍 Оба варианта"),
     ]
     for value, label in options:
-        mark = "✅ " if current.startswith(value.split("_")[0][:6]) else ""
+        if value == "NONE":
+            mark = "✅ " if not (current or "").strip() else ""
+        elif value == "FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА":
+            mark = "✅ " if (current or "").startswith("FICTIONAL CHAT ·") else ""
+        else:
+            mark = "✅ " if (current or "").strip() == DISCLAIMERS[value] else ""
         kb.row(
             InlineKeyboardButton(
                 text=f"{mark}{label}",

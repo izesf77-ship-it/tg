@@ -85,9 +85,20 @@ def chat_id_of(data: str, default: int = -1) -> int:
         return default
 
 
+# Варианты пометки на изображении.
+# Ключ NONE означает «без пометки» (пустая строка) — так выключают её.
+DISCLAIMERS = {
+    "NONE": "",
+    "FICTIONAL": "FICTIONAL CHAT",
+    "ВЫМЫШЛЕННАЯ": "ВЫМЫШЛЕННАЯ ПЕРЕПИСКА",
+    "FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА": "FICTIONAL CHAT · ВЫМЫШЛЕННАЯ ПЕРЕПИСКА",
+}
+
+
 __all__ = [
     "SEP",
     "MAX_LEN",
+    "DISCLAIMERS",
     "cb",
     "parse",
     "head",
