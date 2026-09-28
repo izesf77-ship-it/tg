@@ -249,9 +249,13 @@ def check_project() -> None:
             else:
                 fail(f"requirements.txt НЕ содержит {package}")
         if "aiohttp-socks" in text:
-            ok("requirements.txt: aiohttp-socks (поддержка прокси)")
+            ok("requirements.txt: aiohttp-socks (прокси для aiogram)")
         else:
             warn("requirements.txt без aiohttp-socks — TELEGRAM_PROXY не заработает")
+        if "socksio" in text:
+            ok("requirements.txt: socksio (прокси для httpx)")
+        else:
+            fail("requirements.txt без socksio — проверка прокси упадёт с ImportError")
 
     fonts_dir = ROOT / "fonts"
     if fonts_dir.is_dir():

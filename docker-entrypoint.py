@@ -127,6 +127,10 @@ async def check_telegram(bot_token: str):
     try:
         async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url)
+    except ImportError as exc:
+        # Нужен socksio для httpx — сообщаем понятно, но не пугаем
+        log(f"Проверка через прокси невозможна: {exc}")
+        return None
     except Exception as exc:  # noqa: BLE001
         log(f"СЕТЬ: нет доступа к api.telegram.org — {type(exc).__name__}: {exc}")
         log("  Бот всё равно запускается и будет повторять попытки.")
