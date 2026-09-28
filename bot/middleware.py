@@ -117,6 +117,12 @@ class DbSessionMiddleware(BaseMiddleware):
                 user = await users_svc.register(tg_user)
             except Exception as exc:  # noqa: BLE001 - БД не должна ронять бота
                 logger.exception("Не удалось зарегистрировать пользователя")
+                # Сессия после ошибки flush непригодна: без rollback
+                # следующий commit даст PendingRollbackError
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
                 user = None
 
             data["db_user"] = user

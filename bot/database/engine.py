@@ -6,6 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -26,6 +28,23 @@ def _is_memory(url: str) -> bool:
     return ":memory:" in url or "mode=memory" in url
 
 
+@event.listens_for(Engine, "connect")
+def _sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """Настройки SQLite при каждом подключении.
+
+    WAL-режим позволяет читать и писать одновременно, а busy_timeout
+    заставляет ждать освобождения блокировки вместо мгновенной ошибки
+    «database is locked».
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     """Ленивое создание движка."""
     global _engine
@@ -41,6 +60,10 @@ def get_engine() -> AsyncEngine:
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
         kwargs["pool_pre_ping"] = True
+        # WAL + busy_timeout снимают «database is locked»: aiogram
+        # обрабатывает апдейты параллельно, и без этого две сессии
+        # конфликтуют при записи.
+        kwargs["connect_args"] = {"timeout": 30}
 
     _engine = create_async_engine(url, **kwargs)
     logger.info("БД: %s", settings.db_file)

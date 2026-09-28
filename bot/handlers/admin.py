@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bot.middleware import get_services
+from bot.services.limit_service import ensure_loaded
 import asyncio
 import logging
 
@@ -103,6 +104,19 @@ def _default_limits() -> dict:
     }
 
 
+def _current_limits(limits) -> dict:
+    """Значения лимитов с учётом переопределений из БД.
+
+    Раньше тут было ``limits.overrides() or _default_limits()``: если
+    переопределений не было, показывались дефолты, а стоило изменить один
+    параметр — список показывал только его, и остальные выглядели
+    сброшенными. Теперь всегда показываются все семь параметров.
+    """
+    values = _default_limits()
+    values.update(limits.overrides())
+    return values
+
+
 @router.callback_query(F.data.startswith(C.S_ADMIN + ":"))
 async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
     """Действия админ-панели."""
@@ -137,7 +151,8 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
 
     if action == "limits":
         limits = get_services()["limits"]
-        current = limits.overrides() or _default_limits()
+        await ensure_loaded()
+        current = _current_limits(limits)
         await screens.show(
             callback,
             "⚙️ <b>Лимиты</b>\n\nВыберите параметр для изменения.",
@@ -147,8 +162,8 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
 
     if action == "limits_reset":
         limits = get_services()["limits"]
-        limits._overrides.clear()  # noqa: SLF001 - намеренный сброс к .env
-        logger.info("Админ %s сбросил лимиты", callback.from_user.id)
+        removed = await limits.reset_overrides()
+        logger.info("Админ %s сбросил лимиты (%s)", callback.from_user.id, removed)
         await screens.show(
             callback,
             "♻️ Лимиты сброшены к значениям из .env",
@@ -232,13 +247,14 @@ async def on_limit_value(message: Message, state: FSMContext) -> None:
         return
 
     limits = get_services()["limits"]
-    limits.set_override(key, value)
+    await limits.set_override(key, value)
     logger.info("Админ %s изменил лимит %s=%s", message.from_user.id, key, value)
     await state.clear()
     await message.answer(
-        f"✅ Лимит <code>{TX.esc(key)}</code> = <b>{value}</b>",
+        f"✅ Лимит <code>{TX.esc(key)}</code> = <b>{value}</b>\n\n"
+        "Остальные лимиты остались без изменений.",
         parse_mode=screens.PARSE_MODE,
-        reply_markup=AK.limits_menu(limits.overrides() or _default_limits()),
+        reply_markup=AK.limits_menu(_current_limits(limits)),
     )
 
 

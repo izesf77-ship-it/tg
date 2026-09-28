@@ -877,6 +877,69 @@ def check_disclaimer_toggle() -> str:
     )
 
 
+@step("Лимиты из админки сохраняются и не пропадают")
+def check_limits_persistence() -> str:
+    """Регрессия: переопределения жили в self._overrides экземпляра,
+    а LimitService пересоздаётся на каждый апдейт (bind()).
+    Из-за этого изменённый лимит исчезал, и в списке оставался
+    только он — остальные выглядели сброшенными.
+    """
+    import asyncio
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.services.limit_service import bind, cached, ensure_loaded
+
+    async def run() -> str:
+        await create_all()
+        key = "limit_image_per_hour"
+
+        async with session_scope() as session:
+            limits = bind(session)
+            await limits.set_override(key, 15)
+
+            # 1) Значение применилось
+            assert limits.value(key) == 15, f"ожидалось 15, получено {limits.value(key)}"
+
+            # 2) Пересоздание сервиса не теряет значение (баг из логов)
+            limits2 = bind(session)
+            assert limits2.value(key) == 15, (
+                f"после пересоздания сервиса потерялось: {limits2.value(key)}"
+            )
+
+            # 3) Второй лимит не затирает первый
+            other = "limit_ai_per_hour"
+            await limits2.set_override(other, 7)
+            assert limits2.value(key) == 15, "первый лимит сбросился"
+            assert limits2.value(other) == 7, "второй лимит не сохранён"
+
+            # 4) Оба переопределения переживают перезапуск процесса
+            limits3 = bind(session)
+            loaded = await ensure_loaded()
+            assert limits3.value(key) == 15, "после загрузки из БД — 15"
+            assert limits3.value(other) == 7, "после загрузки из БД — 7"
+            assert key in loaded and other in loaded, loaded
+
+            # 5) Остальные лимиты не тронуты (берутся из .env)
+            untouched = limits3.value("max_messages")
+            assert untouched > 0, "остальные лимиты должны остаться дефолтными"
+
+            # 6) Сброс возвращает к значениям из .env
+            removed = await limits3.reset_overrides()
+            assert removed == 2, f"ожидалось 2 сброшенных, получено {removed}"
+            assert limits3.value(key) != 15, "после сброса лимит не изменился"
+
+        return "15 и 7 сохранились, остальные не тронуты, сброс работает"
+
+    cached.clear()
+    try:
+        detail = asyncio.run(run())
+    finally:
+        cached.clear()
+        asyncio.run(dispose_engine())
+
+    return detail
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1335,6 +1398,7 @@ def main() -> int:
     check_callback_chat_id()
     check_participant_flow()
     check_disclaimer_toggle()
+    check_limits_persistence()
     check_backoff()
     check_imports()
     check_dispatcher()

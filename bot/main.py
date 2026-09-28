@@ -71,6 +71,19 @@ async def on_startup(bot: Bot) -> None:
     settings.setup_dirs()
     await create_all()
 
+    # Переопределения лимитов из админ-панели живут в БД — грузим один раз
+    try:
+        from bot.services.limit_service import bind as bind_limits
+        from bot.services.limit_service import ensure_loaded
+
+        async with session_scope() as session:
+            bind_limits(session)
+            overrides = await ensure_loaded()
+        if overrides:
+            logger.info("Загружены лимиты из БД: %s", overrides)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось загрузить лимиты из БД: %s", exc)
+
     # Прогрев шрифтов: находим файлы один раз при старте
     fonts = get_font_manager()
     logger.info("Шрифты: %s", fonts.info())

@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.database.repositories import UsageRepository, UserRepository
 from bot.models.base import utcnow
+from bot.models.setting import Setting
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,11 @@ LIMIT_KEYS = (
     "max_chats",
 )
 
+# Переопределения в памяти: переживают пересоздание LimitService на каждом
+# апдейте (bind() вызывается в middleware на каждое событие).
+cached: dict[str, int] = {}
+_loaded = False
+
 
 @dataclass
 class LimitResult:
@@ -50,24 +57,58 @@ class LimitResult:
 
 
 class LimitService:
+    """Сервис лимитов.
+
+    Переопределения из админ-панели хранятся в БД (таблица ``settings``)
+    и кэшируются в памяти. Раньше они жили в ``self._overrides``, но сервис
+    пересоздаётся на каждое событие (``bind()``), поэтому любое изменение
+    из админки исчезало уже на следующем апдейте.
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.usage = UsageRepository(session)
         self.users = UserRepository(session)
-        self._overrides: dict[str, int] = {}
 
     # --- Админские переопределения --------------------------------
-    def set_override(self, key: str, value: int) -> None:
-        self._overrides[key] = int(value)
-        logger.info("Лимит %s = %s", key, value)
+    async def set_override(self, key: str, value: int) -> None:
+        """Сохранить лимит в БД (и обновить кэш)."""
+        number = int(value)
+        cached[key] = number
+        row = await self.session.get(Setting, key)
+        if row is None:
+            self.session.add(Setting(key=key, value=str(number)))
+        else:
+            row.value = str(number)
+            row.updated_at = utcnow()
+        await self.session.commit()
+        logger.info("Лимит %s = %s (сохранён в БД)", key, number)
+
+    async def reset_overrides(self) -> int:
+        """Сбросить все переопределения к значениям из .env."""
+        count = len(cached)
+        cached.clear()
+        await self.session.execute(delete(Setting))
+        await self.session.commit()
+        return count
+
+    async def load_overrides(self) -> dict[str, int]:
+        """Загрузить переопределения из БД в кэш."""
+        result = await self.session.execute(select(Setting))
+        for row in result.scalars().all():
+            try:
+                cached[row.key] = int(row.value)
+            except (TypeError, ValueError):
+                continue
+        return dict(cached)
 
     def value(self, key: str) -> int:
-        if key in self._overrides:
-            return self._overrides[key]
+        if key in cached:
+            return cached[key]
         return int(getattr(settings, key, 0))
 
     def overrides(self) -> dict[str, int]:
-        return dict(self._overrides)
+        return dict(cached)
 
     # --- Проверки ---------------------------------------------------
     async def check_image(self, user_id: int, premium: bool = False) -> LimitResult:
@@ -144,15 +185,33 @@ limit_service: Optional[LimitService] = None
 
 
 def bind(session: AsyncSession) -> LimitService:
+    """Создать сервис для сессии; лимиты из БД грузятся один раз (см. ensure_loaded)."""
     global limit_service
     limit_service = LimitService(session)
     return limit_service
+
+
+async def ensure_loaded() -> dict[str, int]:
+    """Загрузить переопределения из БД при первом обращении."""
+    global _loaded
+    if _loaded:
+        return dict(cached)
+    _loaded = True
+    if limit_service is not None:
+        try:
+            await limit_service.load_overrides()
+        except Exception as exc:  # noqa: BLE001
+            _loaded = False
+            logger.warning("Не удалось загрузить лимиты из БД: %s", exc)
+    return dict(cached)
 
 
 __all__ = [
     "LimitService",
     "LimitResult",
     "bind",
+    "ensure_loaded",
+    "cached",
     "KIND_IMAGE",
     "KIND_AI",
     "KIND_ACTION",
