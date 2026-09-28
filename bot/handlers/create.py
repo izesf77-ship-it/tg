@@ -153,7 +153,7 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
     action = C.action(callback.data)
     chats = get_services()["chats"]
     user_id = callback.from_user.id
-    chat_id = C.arg_int(callback.data, 2, -1)
+    chat_id = C.chat_id_of(callback.data)
 
     if action == "next":
         if chat_id < 0:
@@ -455,7 +455,7 @@ async def on_template(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith(C.S_EDIT + ":resume"))
 async def on_resume(callback: CallbackQuery, state: FSMContext) -> None:
     """Продолжить незавершённую переписку."""
-    chat_id = C.arg_int(callback.data, 0, -1)
+    chat_id = C.chat_id_of(callback.data)
     chats = get_services()["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
     await state.set_state(Flow.editor)

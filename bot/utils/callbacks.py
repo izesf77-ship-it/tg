@@ -68,6 +68,23 @@ def arg_int(data: str, index: int, default: int = -1) -> int:
         return default
 
 
+def chat_id_of(data: str, default: int = -1) -> int:
+    """ID переписки из callback_data — всегда ПОСЛЕДНИЙ аргумент.
+
+    Раньше в хендлерах бралась фиксированная позиция (``arg_int(data, 2)``),
+    но у разных кнопок ``chat_id`` стоял на разном месте: у ``pp:open:0:7``
+    это индекс 1, а у ``pp:next:7`` — индекс 0. Из-за этого почти все
+    кнопки отвечали «Переписка не найдена».
+    """
+    parts = parse(data)
+    if len(parts) < 2:
+        return default
+    try:
+        return int(parts[-1])
+    except (TypeError, ValueError):
+        return default
+
+
 __all__ = [
     "SEP",
     "MAX_LEN",
@@ -77,6 +94,7 @@ __all__ = [
     "action",
     "arg",
     "arg_int",
+    "chat_id_of",
     "S_MENU",
     "S_STYLE",
     "S_PART",

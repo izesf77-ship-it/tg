@@ -86,7 +86,7 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
         await open_my_chats(callback, state, page)
         return
 
-    chat_id = C.arg_int(callback.data, 0, -1)
+    chat_id = C.chat_id_of(callback.data)
     if chat_id < 0:
         await screens.safe_answer(callback, "Переписка не найдена.", alert=True)
         return

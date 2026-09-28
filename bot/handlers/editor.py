@@ -419,8 +419,10 @@ async def on_pick_author(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith(C.S_EDIT + ":settime"))
 async def on_set_time(callback: CallbackQuery, state: FSMContext) -> None:
     """Установка текущего времени."""
-    chat_id = C.arg_int(callback.data, 1, -1)
-    index = C.arg_int(callback.data, 2, -1)
+    # Формат кнопки: ed:time:<index>:<chat_id> — chat_id последний.
+    # Раньше индекс читался со позиции 2, где ничего нет, и всегда был -1.
+    chat_id = C.chat_id_of(callback.data)
+    index = C.arg_int(callback.data, 0, -1)
     chats = get_services()["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
 
@@ -805,7 +807,7 @@ async def on_save(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith(C.S_EDIT + ":drop"))
 async def on_drop(callback: CallbackQuery, state: FSMContext) -> None:
     """Удалить переписку."""
-    chat_id = C.arg_int(callback.data, 0, -1)
+    chat_id = C.chat_id_of(callback.data)
     chats = get_services()["chats"]
     if chat_id >= 0:
         try:

@@ -632,6 +632,75 @@ def check_start_handler() -> str:
     return detail
 
 
+@step("chat_id в callback_data читается одинаково в кнопке и хендлере")
+def check_callback_chat_id() -> str:
+    """Регрессия: chat_id лежал на РАЗНЫХ позициях в разных кнопках.
+
+    Обработчик участников брал ``arg_int(data, 2)``, а у кнопки
+    ``pp:open:0:7`` chat_id стоит на позиции 1 — в итоге chat_id был -1
+    и пользователь видел «Переписка не найдена».
+    """
+    from bot.keyboards import create as CK
+    from bot.utils import callbacks as C
+
+    chat_id = 42
+
+    # Кнопки участников: chat_id обязан извлекаться одинаково
+    participant = type("P", (), {"name": "Алексей", "premium": False})()
+    config = type("C", (), {"participants": [participant, participant]})()
+
+    buttons = []
+    markup = CK.participants_menu(config, chat_id)
+    for row in markup.inline_keyboard:
+        buttons.extend(row)
+    markup2 = CK.participant_card(0, participant, chat_id)
+    for row in markup2.inline_keyboard:
+        buttons.extend(row)
+
+    assert buttons, "клавиатура участников пуста"
+    checked = 0
+    for button in buttons:
+        data = button.callback_data
+        action = C.action(data)
+        # «Назад» ведёт на экран выбора стиля и переписку не открывает,
+        # поэтому chat_id в этой кнопке не нужен.
+        if action == "back":
+            continue
+        assert C.chat_id_of(data) == chat_id, (
+            f"кнопка {button.text!r} ({data}) -> chat_id={C.chat_id_of(data)}"
+        )
+        checked += 1
+
+    # Явные проверки форматов, где chat_id последний
+    cases = [
+        (C.cb(C.S_PART, "open", 0, chat_id), "pp open"),
+        (C.cb(C.S_PART, "field", 0, "name", chat_id), "pp field"),
+        (C.cb(C.S_PART, "next", chat_id), "pp next"),
+        (C.cb(C.S_PART, "back", chat_id), "pp back"),
+        (C.cb(C.S_PART, "reset", 0, chat_id), "pp reset"),
+        (C.cb(C.S_EDIT, "open", 0, chat_id), "ed open"),
+        (C.cb(C.S_EDIT, "page", 1, chat_id), "ed page"),
+        (C.cb(C.S_EDIT, "addmenu", chat_id), "ed addmenu"),
+        (C.cb(C.S_EDIT, "time", 3, chat_id), "ed time"),
+        (C.cb(C.S_EDIT, "drop", chat_id), "ed drop"),
+        (C.cb(C.S_EDIT, "resume", chat_id), "ed resume"),
+        (C.cb(C.S_MY, "open", chat_id), "my open"),
+    ]
+    for data, label in cases:
+        assert C.chat_id_of(data) == chat_id, f"{label}: {data} -> {C.chat_id_of(data)}"
+
+    # ed:time:<index>:<chat_id> — индекс обязан читаться с позиции 0
+    time_btn = C.cb(C.S_EDIT, "time", 3, chat_id)
+    assert C.arg_int(time_btn, 0, -1) == 3, "индекс сообщения читается неверно"
+
+    # Безопасность: мусорные данные не должны ронять парсер
+    assert C.chat_id_of("") == -1
+    assert C.chat_id_of("ed:noop") == -1
+    assert C.chat_id_of("ed:open:abc:xyz") == -1
+
+    return f"{checked} кнопок участников + {len(cases)} форматов — chat_id везде верный"
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1087,6 +1156,7 @@ def main() -> int:
     check_proxy_helper()
     check_handler_context()
     check_start_handler()
+    check_callback_chat_id()
     check_backoff()
     check_imports()
     check_dispatcher()
