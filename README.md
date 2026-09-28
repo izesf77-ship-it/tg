@@ -164,6 +164,10 @@ OPENROUTER_API_KEY=
 OPENROUTER_MODEL=openai/gpt-4o-mini
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1/chat/completions
 
+# --- Сеть (если хостинг не пускает к api.telegram.org) ---
+# TELEGRAM_PROXY=socks5://user:password@host:1080
+TELEGRAM_PROXY=
+
 # --- Лимиты ---
 LIMITS_IMAGE_PER_HOUR=20
 LIMITS_AI_PER_HOUR=5
@@ -523,13 +527,21 @@ docker logs -f chat-constructor-bot
 | Симптом | Причина и решение |
 |---------|-------------------|
 | `chown: appuser: No such file or user` | Порядок шагов в Dockerfile нарушен: `useradd` обязан идти **до** `chown`. В текущей версии так и есть; если правите Dockerfile — не меняйте порядок |
+| Бот падает и перезапускается каждые ~30 секунд | Проверьте `Повтор через N с` в логах: скорее всего недоступен `api.telegram.org`. Укажите `TELEGRAM_PROXY=socks5://user:pass@host:1080` |
+| `СЕТЬ: нет доступа к api.telegram.org` | Сеть хостинга не пускает к Telegram. Нужен socks5-прокси (см. `TELEGRAM_PROXY`); либо смените хостинг на зарубежный |
+| `ОШИБКА: Telegram отклонил токен (401 Unauthorized)` | Неверный `BOT_TOKEN`. Проверьте значение в панели, лишние пробелы и кавычки недопустимы |
 | `BOT_TOKEN не задан` | Не задана переменная окружения в панели |
+| `BOT_TOKEN присутствует в переменных окружения, но не был прочитан` | Не установлен `pydantic-settings`. Выполните `pip install -r requirements.txt` |
 | `permission denied` для `/app/data` | Volume смонтирован с правами root. Выполните на хосте `chown -R 10001:10001 <путь-к-volume>` либо добавьте `user: "0:0"` в сервис compose |
 | Каталог доступен только для чтения | read-only mount — уберите флаг `:ro` у тома |
-| Бот сразу перезапускается | Смотрите логи: чаще всего невалидный токен или недоступен Telegram API |
 | `Conflict: terminated by other getUpdates` | Запущено два контейнера с одним токеном — остановите лишний |
 | Пустой лог | Проверьте, что в панели указан `CMD: python docker-entrypoint.py` либо Dockerfile в корне |
 | Картинки без русского текста | В образе должны быть шрифты; проверьте строку `Шрифты:` в логах |
+
+> **Если бот не отвечает, а контейнер «зелёный»:** посмотрите в логах строку
+> `Токен принят Telegram, бот: @имя`. Если её нет — бот не смог достучаться
+> до API и либо повторяет попытки, либо ждёт прокси. Строка
+> `Повтор через N с (попытка K)` показывает, что процесс жив и сам восстанавливается.
 
 > Перед деплоем всегда прогоняйте `python check_docker.py` — валидатор проверяет
 > в том числе, что пользователь создаётся раньше `chown` (регрессия, из-за
@@ -873,6 +885,8 @@ generators/        как рисовать (Pillow)
 | `RENDER_MAX_HEIGHT` | `20000` | Максимальная высота в пикселях |
 | `LOG_LEVEL` | `INFO` | DEBUG / INFO / WARNING / ERROR |
 | `LOG_FILE` | пусто | Путь к файлу логов (ротация 5 МБ × 3) |
+| `TELEGRAM_PROXY` | пусто | socks5-прокси, если api.telegram.org недоступен: `socks5://user:pass@host:1080` |
+| `RUN_SELFCHECK` | `0` | `1` — прогонять полную самопроверку при старте контейнера (~20 с) |
 | `AD_TEXT` | текст | Рекламное сообщение для free-версии |
 
 ---

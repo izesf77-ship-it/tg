@@ -312,6 +312,55 @@ def check_cyrillic_pixels() -> str:
     return f"ширина текста {width}px"
 
 
+@step("Конфигурация читает переменные окружения")
+def check_env_config() -> str:
+    """Регрессия: Settings на базе BaseModel игнорировал ENV, и в Docker
+    бот стартовал с пустым BOT_TOKEN и падал в бесконечном рестарте."""
+    import os
+
+    from bot.config import Settings
+
+    saved = {
+        key: os.environ.get(key)
+        for key in ("BOT_TOKEN", "ADMIN_IDS", "TELEGRAM_PROXY")
+    }
+    try:
+        os.environ["BOT_TOKEN"] = "123456789:AAEnvCheckToken_abcdefghijklmnop"
+        os.environ["ADMIN_IDS"] = "111, 222;333"
+        os.environ["TELEGRAM_PROXY"] = "socks5://u:p@proxy.test:1080"
+        s = Settings()
+        assert s.bot_token == os.environ["BOT_TOKEN"], "BOT_TOKEN не прочитан из ENV"
+        assert s.admin_ids == [111, 222, 333], f"ADMIN_IDS разобран неверно: {s.admin_ids}"
+        assert s.telegram_proxy_host == "proxy.test", s.telegram_proxy_host
+        assert s.telegram_proxy_port == 1080, s.telegram_proxy_port
+        assert s.telegram_proxy_user == "u", s.telegram_proxy_user
+        assert s.telegram_proxy_password == "p", s.telegram_proxy_password
+
+        # Пустой ADMIN_IDS не должен ломать запуск
+        os.environ["ADMIN_IDS"] = ""
+        assert Settings().admin_ids == [], "Пустой ADMIN_IDS должен давать пустой список"
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return "BOT_TOKEN, ADMIN_IDS, TELEGRAM_PROXY читаются из ENV"
+
+
+@step("Маскирование логов не скрывает текст ошибки")
+def check_log_scrub() -> str:
+    from bot.logging_config import scrub
+
+    hidden = scrub("токен 123456789:AAEnvCheckToken_abcdefghijklmnop упал")
+    assert "AAEnvCheckToken" not in hidden, "Токен не замаскирован"
+    assert "упал" in hidden, f"Текст ошибки потерян: {hidden}"
+
+    kept = scrub("TelegramNetworkError: connection refused")
+    assert kept == "TelegramNetworkError: connection refused", kept
+    return "секреты скрыты, диагностика сохранена"
+
+
 @step("Проверка импорта всех модулей")
 def check_imports() -> str:
     import importlib
@@ -744,6 +793,8 @@ def main() -> int:
     _emit("=" * 62)
 
     section("Импорты и архитектура")
+    check_env_config()
+    check_log_scrub()
     check_imports()
     check_dispatcher()
     check_keyboards()

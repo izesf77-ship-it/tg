@@ -9,6 +9,12 @@ from typing import Optional
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import (
+    RestartingTelegram,
+    TelegramConflictError,
+    TelegramNetworkError,
+    TelegramServerError,
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
@@ -95,7 +101,13 @@ async def on_shutdown() -> None:
 
 
 async def main() -> int:
-    """Запуск бота."""
+    """Запуск бота с устойчивостью к сетевым сбоям.
+
+    Раньше любая исключительная ситуация приводила к ``return 1``, и платформа
+    перезапускала контейнер — бот «падал» каждые несколько секунд. Теперь
+    сетевые ошибки и конфликт getUpdates обрабатываются повторными попытками
+    с нарастающей паузой, и процесс остаётся жив.
+    """
     setup_logging()
     try:
         settings.validate_runtime()
@@ -103,26 +115,88 @@ async def main() -> int:
         logger.error("%s", exc)
         return 1
 
+    # Сессия с прокси — нужна, если api.telegram.org недоступен из сети хостинга
+    session = None
+    if settings.telegram_proxy:
+        try:
+            from aiogram.client.session.aiohttp import AiohttpSession
+
+            # aiogram работает поверх aiohttp; для socks5 нужен aiohttp-socks
+            import aiohttp_socks  # noqa: F401
+
+            session = AiohttpSession(proxy=settings.telegram_proxy)
+            logger.info(
+                "Используется прокси %s:%s",
+                settings.telegram_proxy_host,
+                settings.telegram_proxy_port,
+            )
+        except ImportError:
+            logger.error(
+                "Указан TELEGRAM_PROXY, но пакет aiohttp-socks не установлен. "
+                "Выполните: pip install aiohttp-socks"
+            )
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Не удалось настроить прокси: %s: %s",
+                         type(exc).__name__, exc)
+            return 1
+
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True),
+        session=session,
     )
     dp = build_dispatcher()
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
+    # Ошибки, при которых бессмысленно сразу падать: сеть отвалилась,
+    # Telegram временно недоступен, другой экземпляр бота забрал polling.
+    RETRYABLE = (
+        TelegramNetworkError,
+        TelegramServerError,
+        TelegramConflictError,
+        RestartingTelegram,
+        asyncio.TimeoutError,
+    )
+
+    attempt = 0
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Polling запущен. Нажмите Ctrl+C для остановки.")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        while True:
+            try:
+                if attempt:
+                    delay = min(60, 2 ** min(attempt, 5))
+                    logger.warning(
+                        "Повтор через %s с (попытка %s).", delay, attempt + 1
+                    )
+                    await asyncio.sleep(delay)
+                await bot.delete_webhook(drop_pending_updates=True)
+                logger.info("Polling запущен. Нажмите Ctrl+C для остановки.")
+                attempt = 0
+                await dp.start_polling(
+                    bot, allowed_updates=dp.resolve_used_update_types()
+                )
+                break
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except RETRYABLE as exc:
+                attempt += 1
+                logger.error("Сбой соединения с Telegram: %s: %s",
+                             type(exc).__name__, exc)
+            except Exception as exc:  # noqa: BLE001
+                # Непредвиденная ошибка: логируем с трассировкой, но процесс
+                # не убиваем — платформа не должна перезапускать контейнер
+                # в бесконечном цикле, оставляя бота без сообщений об ошибке.
+                attempt += 1
+                logger.exception("Непредвиденная ошибка при работе polling")
+                print(f"Ошибка работы бота: {type(exc).__name__}: {exc}", file=sys.stderr)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Получен сигнал остановки")
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Критическая ошибка при запуске polling")
-        print(f"Ошибка запуска: {exc}", file=sys.stderr)
-        return 1
     finally:
-        await dp.shutdown()
+        try:
+            await dp.shutdown()
+        except Exception:  # noqa: BLE001 # pragma: no cover
+            pass
         try:
             await bot.session.close()
         except Exception:  # noqa: BLE001 # pragma: no cover

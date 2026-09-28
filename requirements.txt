@@ -7,4 +7,8 @@ aiosqlite==0.22.1
 Pillow==12.3.0
 python-dotenv==1.2.1
 pydantic==2.13.5
+pydantic-settings==2.15.0
 httpx==0.28.1
+# Нужен для работы с прокси socks5 (TELEGRAM_PROXY), если api.telegram.org
+# недоступен из сети хостинга. aiogram использует aiohttp_socks внутри.
+aiohttp-socks==0.12.0

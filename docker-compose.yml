@@ -29,6 +29,8 @@ services:
       LANG: C.UTF-8
       TZ: ${TZ:-Europe/Moscow}
       PYTHONUNBUFFERED: "1"
+      # Полная самопроверка рендерера при старте (медленно, ~20 с)
+      RUN_SELFCHECK: "${RUN_SELFCHECK:-0}"
 
     volumes:
       # Постоянные данные: БД, загруженные фото, последние рендеры

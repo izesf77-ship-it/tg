@@ -59,6 +59,7 @@ ENV PYTHONUNBUFFERED=1 \
     HOME=/app \
     FONTS_DIR=/app/fonts \
     DB_PATH=/app/data/bot.sqlite3 \
+    RUN_SELFCHECK=0 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     TZ=Europe/Moscow

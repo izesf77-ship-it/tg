@@ -237,11 +237,15 @@ def check_project() -> None:
     if req.exists():
         text = req.read_text(encoding="utf-8").lower()
         for package in ("aiogram", "sqlalchemy", "aiosqlite", "pillow",
-                        "pydantic", "python-dotenv", "httpx"):
+                        "pydantic", "pydantic-settings", "python-dotenv", "httpx"):
             if package in text:
                 ok(f"requirements.txt: {package}")
             else:
                 fail(f"requirements.txt НЕ содержит {package}")
+        if "aiohttp-socks" in text:
+            ok("requirements.txt: aiohttp-socks (поддержка прокси)")
+        else:
+            warn("requirements.txt без aiohttp-socks — TELEGRAM_PROXY не заработает")
 
     fonts_dir = ROOT / "fonts"
     if fonts_dir.is_dir():

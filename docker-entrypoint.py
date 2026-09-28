@@ -15,18 +15,6 @@ def log(message: str) -> None:
     print(f"[start] {message}", flush=True)
 
 
-def check_token() -> bool:
-    token = (os.environ.get("BOT_TOKEN") or "").strip()
-    if not token:
-        log("ОШИБКА: BOT_TOKEN не задан. Задайте переменную окружения BOT_TOKEN.")
-        return False
-    if ":" not in token or len(token) < 30:
-        log("ОШИБКА: BOT_TOKEN выглядит некорректно (ожидается формат 123456:AA...).")
-        return False
-    log("BOT_TOKEN найден")
-    return True
-
-
 def check_fonts() -> None:
     try:
         from bot.generators.fonts import get_font_manager
@@ -86,8 +74,51 @@ def _log_permission_hint(directory: str) -> None:
     log('  Либо запустите контейнер от root: добавьте user: "0:0" в compose')
 
 
+async def check_telegram(bot_token: str) -> bool:
+    """Проверить токен реальным вызовом getMe.
+
+    Разделяет две принципиально разные причины падения, которые по логам
+    невозможно отличить:
+      * 401 Unauthorized — токен неверный;
+      * сетевая ошибка — нет доступа к api.telegram.org.
+    """
+    import httpx
+
+    url = f"https://api.telegram.org/bot{bot_token}/getMe"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(url)
+    except Exception as exc:  # noqa: BLE001
+        log(f"СЕТЬ: нет доступа к api.telegram.org — {type(exc).__name__}: {exc}")
+        log("  Если бот запущен за рубежом или в сети с ограничениями, "
+            "укажите прокси: TELEGRAM_PROXY=socks5://user:pass@host:port")
+        return False
+
+    if response.status_code == 401:
+        log("ОШИБКА: Telegram отклонил токен (401 Unauthorized).")
+        log("  Проверьте, что BOT_TOKEN указан верно и без лишних пробелов.")
+        return False
+    if response.status_code != 200:
+        log(f"ПРЕДУПРЕЖДЕНИЕ: getMe вернул HTTP {response.status_code}")
+        return True
+    try:
+        username = response.json().get("result", {}).get("username", "?")
+    except Exception:  # noqa: BLE001 # pragma: no cover
+        username = "?"
+    log(f"Токен принят Telegram, бот: @{username}")
+    return True
+
+
 def run_selfcheck() -> None:
-    """Прогон самопроверки рендерера (не блокирует запуск)."""
+    """Прогон самопроверки рендерера (не блокирует запуск).
+
+    В контейнере отключается по умолчанию: полный прогон занимает ~20 секунд,
+    а при каждом рестарте это существенно задерживает поднятие бота.
+    Включается переменной окружения RUN_SELFCHECK=1.
+    """
+    if (os.environ.get("RUN_SELFCHECK") or "").strip().lower() not in ("1", "true", "yes"):
+        log("Самопроверка пропущена (включается RUN_SELFCHECK=1)")
+        return
     try:
         proc = subprocess.run(
             [sys.executable, "check.py"],
@@ -108,14 +139,31 @@ def run_selfcheck() -> None:
 
 
 def main() -> int:
+    import asyncio
+
     log("=" * 54)
     log("Telegram Chat Constructor Bot — запуск в контейнере")
     log("=" * 54)
 
-    if not check_token():
+    token = (os.environ.get("BOT_TOKEN") or "").strip()
+    if not token:
+        log("ОШИБКА: BOT_TOKEN не задан. Задайте переменную окружения BOT_TOKEN.")
         return 1
+    if ":" not in token or len(token) < 30:
+        log("ОШИБКА: BOT_TOKEN выглядит некорректно (ожидается формат 123456:AA...).")
+        return 1
+    log("BOT_TOKEN найден")
+
     if not check_data_dir():
         return 1
+
+    # Проверка связи с Telegram: отличает неверный токен от недоступной сети
+    try:
+        if not asyncio.run(check_telegram(token)):
+            log("Запуск прерван: Telegram API недоступен или токен отклонён.")
+            return 1
+    except Exception as exc:  # noqa: BLE001 # pragma: no cover
+        log(f"Проверку Telegram пропускаю: {type(exc).__name__}: {exc}")
 
     check_fonts()
     run_selfcheck()
@@ -123,7 +171,6 @@ def main() -> int:
     log("Запускаю бота…")
     try:
         from bot.main import main as bot_main
-        import asyncio
 
         return asyncio.run(bot_main())
     except Exception as exc:  # noqa: BLE001

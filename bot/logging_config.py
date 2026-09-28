@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import re
 import sys
 from pathlib import Path
 
@@ -17,28 +18,50 @@ from bot.config import settings
 _CONSOLE_FMT = "%(levelname)-8s %(asctime)s | %(name)-22s | %(message)s"
 _FILE_FMT = "%(asctime)s | %(levelname)-8s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
 
-# Эти данные никогда не попадают в логи
-SENSITIVE_KEYS = (
-    "bot_token",
-    "token",
-    "api_key",
-    "openrouter_api_key",
-    "password",
-    "authorization",
+# Секретные значения маскируются по шаблонам ниже, а не удалением строки.
+_PATTERNS = (
+    re.compile(r"\b\d{6,}:[A-Za-z0-9_\-]{20,}"),          # токен Telegram
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),               # ключ OpenAI-совместимый
+    re.compile(r"\bsk-or-v1-[A-Za-z0-9_\-]{16,}"),        # ключ OpenRouter
+    re.compile(r"(?i)\bbot_token\s*=\s*\S+"),             # BOT_TOKEN=значение
+    re.compile(r"(?i)\bapi_key\s*[:=]\s*\S+"),             # api_key: значение
 )
+
+_MASK = "***скрыто***"
+
+
+def scrub(text: str) -> str:
+    """Замаскировать секретные значения, сохранив остальной текст.
+
+    Раньше фильтр заменял сообщение целиком на
+    ``<redacted sensitive log entry>``, из-за чего в логах не было видно
+    самой ошибки — её невозможно было диагностировать.
+    """
+    for pattern in _PATTERNS:
+        text = pattern.sub(_MASK, text)
+    return text
 
 
 class _RedactFilter(logging.Filter):
-    """Маскирует значения токенов/ключей, если они случайно попали в сообщение."""
+    """Маскирует значения токенов/ключей, сохраняя текст ошибки."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
         except Exception:  # pragma: no cover - defensive
             return True
-        if any(k in msg.lower() for k in SENSITIVE_KEYS):
-            record.msg = "<redacted sensitive log entry>"
-            record.args = ()
+        # Значения секретов маскируем точечно
+        record.msg = scrub(msg)
+        record.args = ()
+
+        # Исключение тоже может содержать токен (например, в URL метода)
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            cleaned = scrub(str(exc))
+            if cleaned != str(exc):
+                record.exc_text = None
+                record.exc_info = None
+                record.msg = f"{record.msg} | {type(exc).__name__}: {cleaned}"
         return True
 
 
