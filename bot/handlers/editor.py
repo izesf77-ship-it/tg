@@ -73,16 +73,33 @@ async def show_editor(
 
 
 async def _require_chat(target, state: FSMContext):
-    """Загрузить конфиг текущей переписки из состояния FSM."""
+    """Загрузить конфиг текущей переписки.
+
+    ``chat_id`` берётся из callback_data кнопки, а не только из FSM.
+    Раньше источником был исключительно ``state.get_data()``, а хранилище
+    состояний — ``MemoryStorage``: после перезапуска контейнера (например,
+    при деплое новой версии) состояние пустело, и ЛЮБАЯ кнопка редактора
+    отвечала «Переписка не найдена». Теперь кнопка самодостаточна.
+    """
     from bot.utils.errors import ChatNotFoundError
 
-    data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    chat_id = -1
+    raw = getattr(target, "data", None)
+    if isinstance(raw, str) and raw:
+        chat_id = C.chat_id_of(raw)
+    if chat_id < 0:
+        data = await state.get_data()
+        chat_id = int(data.get("chat_id", -1))
     if chat_id < 0:
         raise ChatNotFoundError()
+
     event = target if hasattr(target, "data") else target.message
     chats = get_services()["chats"]
     config = await chats.get_config(event.from_user.id, chat_id)
+    # Синхронизируем FSM: отсюда берутся message_index, kind, side и т.п.
+    data = await state.get_data()
+    if data.get("chat_id") != chat_id:
+        await state.update_data(chat_id=chat_id)
     return chat_id, config, event.from_user.id
 
 
@@ -99,6 +116,8 @@ async def _save_and_back(
     event = target if hasattr(target, "data") else target.message
     await get_services()["chats"].save(user_id, chat_id, config)
     await state.set_state(Flow.editor)
+    # Снимаем ввод: поле/индекс больше не должны влиять на след. действие.
+    await state.update_data(chat_id=chat_id, field="", pending_text="", reply_to=None)
     await show_editor(target, config, chat_id, state, page, header=header)
 
 
@@ -146,13 +165,18 @@ async def _start_add(
     callback: CallbackQuery, state: FSMContext, config, chat_id: int,
     user_id: int, side: int = -1, kind: str = "text", reply_to: Optional[str] = None,
 ) -> None:
-    """Начать добавление нового сообщения."""
+    """Начать добавление нового сообщения.
+
+    Перед началом ПОЛНОСТЬЮ перезаписываем состояние: старые ключи
+    ``field``, ``message_index`` и ``pending_text`` оставались от
+    предыдущей операции и ломали определение режима (правка vs добавление).
+    """
     data = {"chat_id": chat_id, "kind": kind, "reply_to": reply_to}
 
     if side < 0:
         # Сначала спрашиваем отправителя
         await state.set_state(Flow.add_author)
-        await state.update_data(**data)
+        await state.update_data(**data, message_index=-1, field="author")
         await callback.message.answer(
             "👤 <b>Кто отправляет?</b>\n\nВыберите участника:",
             parse_mode=screens.PARSE_MODE,
@@ -161,7 +185,9 @@ async def _start_add(
         return
 
     await state.set_state(Flow.add_text)
-    await state.update_data(**data, side=side)
+    await state.update_data(
+        **data, side=side, message_index=-1, field="", pending_text=""
+    )
     prompt = T.field_prompt("text")
     if kind == "service":
         prompt = T.field_prompt("service")
@@ -197,12 +223,29 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
         await show_editor(callback, config, chat_id, state, C.arg_int(callback.data, 0, 0))
         return
 
-    if action in ("back", "participants"):
+    # «Назад» из вложенных экранов редактора → список сообщений.
+    # Раньше обработчик ``back`` открывал экран УЧАСТНИКОВ, поэтому
+    # возврат из меню времени/реакции/медиа уводил в сторону.
+    if action == "list":
+        chat_id, config, _ = await _require_chat(callback, state)
+        await state.set_state(Flow.editor)
+        await show_editor(callback, config, chat_id, state)
+        return
+
+    if action == "participants":
         chat_id, config, _ = await _require_chat(callback, state)
         await state.set_state(Flow.participants)
+        await state.update_data(chat_id=chat_id)
         await screens.show(
             callback, T.participants_screen(config), CK.participants_menu(config, chat_id)
         )
+        return
+
+    if action == "back":
+        # Совместимость со старыми кнопками: «Назад» → редактор.
+        chat_id, config, _ = await _require_chat(callback, state)
+        await state.set_state(Flow.editor)
+        await show_editor(callback, config, chat_id, state)
         return
 
     if action == "settings":
@@ -210,6 +253,7 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
         from bot.keyboards.menus import chat_settings_menu
 
         await state.set_state(Flow.chat_settings)
+        await state.update_data(chat_id=chat_id)
         await screens.show(
             callback, T.chat_summary(config), chat_settings_menu(chat_id)
         )
@@ -221,13 +265,13 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     page = int(data.get("page", 0))
 
     if action == "open":
-        index = C.arg_int(callback.data, 0, -1)
+        index = C.index_of(callback.data, -1)
         if not (0 <= index < len(config.messages)):
             await screens.safe_answer(callback, "Сообщение не найдено.", alert=True)
             return
         message = config.messages[index]
         await state.set_state(Flow.message_menu)
-        await state.update_data(message_index=index)
+        await state.update_data(chat_id=chat_id, message_index=index)
         await screens.show(
             callback,
             T.message_card(index + 1, message, chats_author(config, message)),
@@ -256,7 +300,11 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    index = C.arg_int(callback.data, 1, -1)
+    # Единый разбор индекса: он всегда предпоследний аргумент
+    # (см. C.index_of). Раньше здесь стоял фиксированный ``arg_int(data, 1)``,
+    # из-за чего у кнопок ``ed:setreact:<emoji>:<chat_id>:<index>`` и
+    # ``ed:settype:<key>:<chat_id>:<index>`` в «индекс» попадал chat_id.
+    index = C.index_of(callback.data, -1)
     if not (0 <= index < len(config.messages)):
         await screens.safe_answer(callback, "Сообщение не найдено.", alert=True)
         return
@@ -366,8 +414,9 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "replytarget":
-        target_index = C.arg_int(callback.data, 0, -1)
+        target_index = C.index_of(callback.data, -1)
         if not (0 <= target_index < len(config.messages)):
+            await screens.safe_answer(callback, "Сообщение не найдено.", alert=True)
             return
         await _start_add(
             callback, state, config, chat_id, user_id,
@@ -380,17 +429,22 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith(C.S_EDIT + ":pickauthor"))
 async def on_pick_author(callback: CallbackQuery, state: FSMContext) -> None:
-    """Выбор отправителя (для нового сообщения или смены автора)."""
-    action = C.arg(callback.data, 2)
-    chat_id = C.arg_int(callback.data, 1, -1)
-    index = C.arg_int(callback.data, 3, -1)
+    """Выбор отправителя (для нового сообщения или смены автора).
+
+    Формат кнопки: ``ed:pickauthor:<i>:<action>:<index>:<chat_id>``.
+    """
+    chat_id = C.chat_id_of(callback.data)
+    index = C.index_of(callback.data, -1)
+    action = C.arg(callback.data, 1)      # "new" | "change"
     side = 0 if C.arg_int(callback.data, 0, 0) == 0 else 1
+
+    if chat_id < 0:
+        chat_id, _config, _uid = await _resolve_chat(callback, state)
+    config = await get_services()["chats"].get_config(callback.from_user.id, chat_id)
 
     data = await state.get_data()
     kind = str(data.get("kind", "text"))
     reply_to = data.get("reply_to")
-    chats = get_services()["chats"]
-    config = await chats.get_config(callback.from_user.id, chat_id)
 
     if action == "change" and 0 <= index < len(config.messages):
         message = config.messages[index]
@@ -416,29 +470,51 @@ async def on_pick_author(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+async def _resolve_chat(callback: CallbackQuery, state: FSMContext):
+    """Загрузить переписку по кнопке, при неудаче — из FSM."""
+    chat_id, config, user_id = await _require_chat(callback, state)
+    return chat_id, config, user_id
+
+
 @router.callback_query(F.data.startswith(C.S_EDIT + ":settime"))
 async def on_set_time(callback: CallbackQuery, state: FSMContext) -> None:
-    """Установка текущего времени."""
-    # Формат кнопки: ed:time:<index>:<chat_id> — chat_id последний.
-    # Раньше индекс читался со позиции 2, где ничего нет, и всегда был -1.
+    """Установка текущего времени.
+
+    Формат кнопки: ``ed:settime:now:<index>:<chat_id>`` — ``chat_id``
+    последний, ``index`` предпоследний.
+
+    Раньше разбор шёл так: ``chat_id_of`` возвращал последний аргумент,
+    а последним был ``index``. В итоге вместо ``chat_id`` в запрос попадал
+    индекс сообщения, и пользователь видел «Переписка не найдена» ровно
+    при установке времени. Плюс ``_ask_time`` передавал в меню
+    ``chat_id = -1``, что ломало и так.
+    """
     chat_id = C.chat_id_of(callback.data)
-    index = C.arg_int(callback.data, 0, -1)
+    index = C.index_of(callback.data, -1)
+
+    if chat_id < 0:
+        chat_id, _config, _uid = await _resolve_chat(callback, state)
+
     chats = get_services()["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
+    now = current_time_str()
 
     if action_is_new(index):
-        data = await state.get_data()
+        # Новое сообщение: фиксируем время и только теперь создаём его.
         await _commit_message(
-            callback, state, config, chat_id, callback.from_user.id, time_value=current_time_str()
+            callback, state, config, chat_id, callback.from_user.id, time_value=now
         )
         return
 
     if 0 <= index < len(config.messages):
-        config.messages[index].time = current_time_str()
+        config.messages[index].time = now
         await _save_and_back(
             callback, state, config, chat_id, callback.from_user.id, index,
-            f"🕐 Время: {current_time_str()}",
+            f"🕐 Время: {now}",
         )
+        return
+
+    await screens.safe_answer(callback, "Сообщение не найдено.", alert=True)
 
 
 def action_is_new(index: int) -> bool:
@@ -448,10 +524,14 @@ def action_is_new(index: int) -> bool:
 
 @router.callback_query(F.data.startswith(C.S_EDIT + ":manualtime"))
 async def on_manual_time(callback: CallbackQuery, state: FSMContext) -> None:
-    """Ручной ввод времени."""
-    chat_id = C.arg_int(callback.data, 0, -1)
-    index = C.arg_int(callback.data, 1, -1)
-    await state.set_state(Flow.add_manual_time)
+    """Ручной ввод времени. Формат: ``ed:manualtime:<index>:<chat_id>``."""
+    chat_id = C.chat_id_of(callback.data)
+    index = C.index_of(callback.data, -1)
+
+    if chat_id < 0:
+        chat_id, _config, _uid = await _resolve_chat(callback, state)
+
+    await state.set_state(Flow.manual_time)
     await state.update_data(chat_id=chat_id, message_index=index, field="time")
     await callback.message.answer(
         "⌨️ <b>Введите время</b>\n\nФормат: <code>12:41</code>, <code>23:07</code>, "
@@ -461,7 +541,7 @@ async def on_manual_time(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.message(Flow.add_manual_time, F.text)
+@router.message(Flow.manual_time, F.text)
 async def on_manual_time_input(message: Message, state: FSMContext) -> None:
     """Обработка введённого времени."""
     data = await state.get_data()
@@ -534,6 +614,11 @@ async def _commit_message(
 
     config.messages.append(message)
     index = len(config.messages) - 1
+    # Чистим временные ключи: иначе следующая правка сообщения будет
+    # ошибочно принята за продолжение добавления нового.
+    await state.update_data(
+        message_index=index, field="", pending_text="", reply_to=None
+    )
     await _save_and_back(
         target, state, config, chat_id, user_id, index,
         "✅ Сообщение добавлено.",
@@ -569,8 +654,12 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
     config = await chats.get_config(message.from_user.id, chat_id)
     kind = str(data.get("kind", "text"))
 
-    if index >= 0 and "message_index" in data and "side" not in data:
-        # Правка существующего сообщения
+    # Режим правки определяется полем ``field == "text"``, а не наличием
+    # ключа ``side`` в состоянии. Раньше проверка была ``"side" not in data``:
+    # после добавления первого сообщения в состоянии навсегда оставался
+    # ``side``, и последующая правка существующего сообщения молча
+    # превращалась в добавление НОВОГО сообщения — «правка не сохранялась».
+    if str(data.get("field", "")) == "text" and index >= 0:
         if 0 <= index < len(config.messages):
             config.messages[index].text = TX.clamp(text, TX.MAX_MESSAGE_LENGTH)
             config.messages[index].edited = True
@@ -578,6 +667,12 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
                 message, state, config, chat_id, message.from_user.id, index,
                 "✏️ Сообщение изменено.",
             )
+            return
+        await message.answer(
+            "Сообщение больше не существует. Откройте переписку заново.",
+            reply_markup=KB.main_menu(),
+        )
+        await state.clear()
         return
 
     if kind == "forward":
@@ -591,17 +686,24 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(pending_text=text, message_index=-1)
-    await _ask_time(message, state)
+    await _ask_time(message, state, chat_id)
 
 
-async def _ask_time(target, state: FSMContext) -> None:
-    """Спросить время сообщения."""
+async def _ask_time(target, state: FSMContext, chat_id: int = -1) -> None:
+    """Спросить время сообщения.
+
+    ``chat_id`` ОБЯЗАТЕЛЬНО передаётся дальше в меню времени. Раньше здесь
+    стояло ``EK.time_menu(-1, -1)`` — кнопка несла ``chat_id = -1``, и
+    нажатие «Текущее время» всегда давало «Переписка не найдена».
+    """
+    if chat_id < 0:
+        chat_id = int((await state.get_data()).get("chat_id", -1))
     await state.set_state(Flow.add_time)
     await target.answer(
         "🕐 <b>Время сообщения?</b>\n\n"
         "Выберите текущее время или укажите вручную (<code>12:41</code>).",
         parse_mode=screens.PARSE_MODE,
-        reply_markup=EK.time_menu(-1, -1),
+        reply_markup=EK.time_menu(chat_id, -1),
     )
 
 
@@ -665,7 +767,9 @@ async def on_time_text(message: Message, state: FSMContext) -> None:
         await message.answer(
             "Неверный ввод. Формат времени: <code>12:41</code>.",
             parse_mode=screens.PARSE_MODE,
-            reply_markup=EK.time_menu(-1, -1),
+            # chat_id обязателен: с -1 кнопка «Текущее время» снова
+            # привела бы к «Переписка не найдена».
+            reply_markup=EK.time_menu(chat_id, -1),
         )
         return
     await _commit_message(message, state, config, chat_id, message.from_user.id, value)
@@ -842,12 +946,23 @@ SETTING_MAP = {
 @router.callback_query(F.data.startswith(C.S_EDIT + ":setdisc"))
 async def on_set_disclaimer(callback: CallbackQuery, state: FSMContext) -> None:
     """Включение/выключение и смена текста пометки."""
-    from bot.keyboards.menus import chat_settings_menu
+    from bot.keyboards.menus import disclaimer_picker
 
     chat_id, config, user_id = await _require_chat(callback, state)
-    # NONE — выключить пометку; неизвестный ключ тоже трактуем как «без пометки»
-    config.disclaimer = C.DISCLAIMERS.get(C.arg(callback.data, 0), "")
+    # Ключ приходит коротким (NONE/EN/RU/BOTH) — так callback_data
+    # укладывается в лимит Telegram в 64 байта.
+    key = C.arg(callback.data, 0)
+    config.disclaimer = C.disclaimer_of(key)
     await get_services()["chats"].save(user_id, chat_id, config)
+    # Раньше экран НЕ обновлялся: пометка менялась, но пользователь видел
+    # старый список и нажимал «Назад», полагая, что ничего не сохранилось.
+    await screens.show(
+        callback,
+        "⚠️ <b>Пометка на изображении</b>\n\n"
+        + (f"Сейчас на изображении: <b>{TX.esc(config.disclaimer)}</b>"
+           if config.disclaimer else "Пометка выключена."),
+        disclaimer_picker(chat_id, config.disclaimer),
+    )
 
 
 @router.callback_query(F.data.startswith(C.S_EDIT + ":setopt"))

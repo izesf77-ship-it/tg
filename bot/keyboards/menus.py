@@ -129,7 +129,9 @@ def chat_settings_menu(chat_id: int) -> InlineKeyboardMarkup:
             text="🗑 Очистить сообщения", callback_data=C.cb(C.S_EDIT, "clear", chat_id)
         )
     )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    # «Назад» из настроек возвращает в редактор (список сообщений), а не
+    # на экран участников — раньше здесь стоял ``ed:back``.
+    return with_back(kb, C.cb(C.S_EDIT, "list", chat_id)).as_markup()
 
 
 def toggle_menu(option: str, chat_id: int, current: bool) -> InlineKeyboardMarkup:
@@ -169,23 +171,23 @@ def disclaimer_picker(chat_id: int, current: str) -> InlineKeyboardMarkup:
     и выбрать один из вариантов текста.
     """
     kb = InlineKeyboardBuilder()
+    # В callback_data кладём КОРОТКИЙ ключ, а не сам текст пометки.
+    # Раньше туда писался текст («FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА»),
+    # из-за чего callback_data выходил длиннее 64 байт и C.cb() бросал
+    # ValueError — экран настроек пометки вообще не открывался.
     options = [
-        ("NONE", "🚫 Без пометки"),
-        ("FICTIONAL", "🇬🇧 FICTIONAL CHAT"),
-        ("ВЫМЫШЛЕННАЯ", "🇷🇺 ВЫМЫШЛЕННАЯ ПЕРЕПИСКА"),
-        ("FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА", "🌍 Оба варианта"),
+        ("NONE", "🚫 Без пометки", ""),
+        ("EN", "🇬🇧 FICTIONAL CHAT", "FICTIONAL"),
+        ("RU", "🇷🇺 ВЫМЫШЛЕННАЯ ПЕРЕПИСКА", "ВЫМЫШЛЕННАЯ"),
+        ("BOTH", "🌍 Оба варианта", "FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА"),
     ]
-    for value, label in options:
-        if value == "NONE":
-            mark = "✅ " if not (current or "").strip() else ""
-        elif value == "FICTIONAL_CHAT_ВЫМЫШЛЕННАЯ_ПЕРЕПИСКА":
-            mark = "✅ " if (current or "").startswith("FICTIONAL CHAT ·") else ""
-        else:
-            mark = "✅ " if (current or "").strip() == DISCLAIMERS[value] else ""
+    for key, label, text_key in options:
+        expected = (DISCLAIMERS.get(text_key) or "").strip()
+        mark = "✅ " if (current or "").strip() == expected else ""
         kb.row(
             InlineKeyboardButton(
                 text=f"{mark}{label}",
-                callback_data=C.cb(C.S_EDIT, "setdisc", value, chat_id),
+                callback_data=C.cb(C.S_EDIT, "setdisc", key, chat_id),
             )
         )
     return with_back(kb, C.cb(C.S_EDIT, "settings", chat_id)).as_markup()

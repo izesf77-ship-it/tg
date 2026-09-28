@@ -37,9 +37,12 @@ async def open_creation(message: Message, state: FSMContext) -> None:
     limits = get_services()["limits"]
     db_user = get_db_user()
 
-    # Если уже есть черновик — предлагаем продолжить
+    # Если уже есть черновик — предлагаем продолжить.
+    # Проверяем не только message_count: раньше черновик с настроенными
+    # участниками, но без сообщений считался «пустым» и не предлагался,
+    # поэтому имена участников молча терялись при следующем запуске.
     draft = await chats.get_draft(message.from_user.id)
-    if draft is not None and draft.message_count > 0:
+    if draft is not None and _draft_has_content(draft, chats):
         await message.answer(
             "📌 У вас есть незавершённая переписка "
             f"({draft.message_count} сообщ.).\n\nПродолжить её?",
@@ -68,6 +71,29 @@ async def open_creation(message: Message, state: FSMContext) -> None:
         parse_mode=screens.PARSE_MODE,
         reply_markup=CK.style_menu(premium),
     )
+
+
+def _draft_has_content(draft, chats) -> bool:
+    """Есть ли в черновике что-то, ради чего его нужно продолжать.
+
+    Сообщения — очевидно. Но если пользователь только лишь назвал
+    участников, это тоже ценная работа: без этой проверки черновик
+    считался пустым, предлагался «Начать новую», и имена пропадали.
+    """
+    if draft.message_count > 0:
+        return True
+    try:
+        config = chats.repo.load_config_sync(draft)
+    except Exception:  # noqa: BLE001 - проверка не должна ломать вход
+        return False
+    for p in config.participants:
+        if (p.name or "").strip() not in ("", "Участник 1", "Участник 2"):
+            return True
+        if (p.username or "").strip() or (p.display_name or "").strip():
+            return True
+        if p.avatar_path:
+            return True
+    return False
 
 
 def _resume_keyboard(chat_id: int):
@@ -160,20 +186,32 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
             await screens.safe_answer(callback, "Переписка не найдена.", alert=True)
             return
         config = await chats.get_config(user_id, chat_id)
+        # Сохраняем настройки участников перед переходом в редактор —
+        # иначе возврат и повторный вход теряли часть изменений.
+        await chats.save(user_id, chat_id, config)
         await state.set_state(Flow.editor)
-        await state.update_data(chat_id=chat_id, page=0)
+        await state.update_data(chat_id=chat_id, page=0, field="")
         from bot.handlers.editor import show_editor
 
         await show_editor(callback, config, chat_id, state, 0)
         return
 
     if action == "back":
-        await state.set_state(Flow.style)
-        premium = _premium_of(callback)
+        # «Назад» с экрана участников → список участников, а не выбор
+        # стиля. Раньше здесь был переход на экран стиля, который создавал
+        # новую пустую переписку и терял всё введённое.
+        if chat_id < 0:
+            await state.clear()
+            await screens.show(callback, T.WELCOME, reply_markup=KB.main_menu())
+            return
+        config = await chats.get_config(user_id, chat_id)
+        await chats.save(user_id, chat_id, config)
+        await state.set_state(Flow.participants)
+        await state.update_data(chat_id=chat_id, field="")
         await screens.show(
             callback,
-            "🎨 <b>Выбери стиль интерфейса</b>",
-            CK.style_menu(premium),
+            T.participants_screen(config),
+            CK.participants_menu(config, chat_id),
         )
         return
 
@@ -271,6 +309,50 @@ async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
+    if action == "gen_avatar":
+        # Кнопка «🎲 Случайный цвет» была в клавиатуре, но хендлера не
+        # было — нажатие давало «Неизвестное действие».
+        index = C.arg_int(callback.data, 0)
+        config = await chats.get_config(user_id, chat_id)
+        participant = ChatService.participant(config, index)
+        if participant is None:
+            await screens.safe_answer(callback, "Участник не найден.", alert=True)
+            return
+        import random
+
+        palette = ["FF6B6B", "4ECDC4", "45B7D1", "96CEB4", "FFEAA7",
+                   "DDA0DD", "98D8C8", "F7B267", "A3C4F3", "C9ADA7"]
+        participant.avatar_path = f"color:#{random.choice(palette)}"
+        await chats.save(user_id, chat_id, config)
+        await state.set_state(Flow.participant)
+        await state.update_data(chat_id=chat_id, participant_index=index, field="")
+        await screens.show(
+            callback,
+            T.participant_screen(index, participant),
+            CK.participant_card(index, participant, chat_id),
+        )
+        return
+
+    if action == "set_premium":
+        # Аналогично: кнопки «Да/Нет» для Premium не обрабатывались.
+        index = C.arg_int(callback.data, 0)
+        value = C.arg_int(callback.data, 1, 1) == 1
+        config = await chats.get_config(user_id, chat_id)
+        participant = ChatService.participant(config, index)
+        if participant is None:
+            await screens.safe_answer(callback, "Участник не найден.", alert=True)
+            return
+        participant.premium = value
+        await chats.save(user_id, chat_id, config)
+        await state.set_state(Flow.participant)
+        await state.update_data(chat_id=chat_id, participant_index=index, field="")
+        await screens.show(
+            callback,
+            T.participant_screen(index, participant),
+            CK.participant_card(index, participant, chat_id),
+        )
+        return
+
     await screens.safe_answer(callback, "Неизвестное действие.", alert=True)
 
 
@@ -302,6 +384,9 @@ async def on_participant_photo(
     participant.avatar_path = str(path)
     await chats.save(message.from_user.id, chat_id, config)
     await state.set_state(Flow.participant)
+    # Сбрасываем поле ввода: иначе следующий введённый текст снова
+    # изменил бы это же поле вместо создания нового сообщения.
+    await state.update_data(chat_id=chat_id, participant_index=index, field="")
     await message.answer(
         T.participant_screen(index, participant),
         parse_mode=screens.PARSE_MODE,
