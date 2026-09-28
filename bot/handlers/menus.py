@@ -25,9 +25,9 @@ router = Router(name="menus")
 
 async def open_settings(target, state: FSMContext) -> None:
     """Экран настроек бота."""
-    limits = get_services(target.data)["limits"]
-    user = get_db_user(target.data)
-    db_user = get_services(target.data)["user"]
+    limits = get_services()["limits"]
+    user = get_db_user()
+    db_user = get_services()["user"]
     from bot.services.ai_service import ai_service
 
     user_id = target.from_user.id
@@ -87,7 +87,7 @@ async def on_menu(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
     """Настройки бота."""
     action = C.action(callback.data)
-    limits = get_services(callback.data)["limits"]
+    limits = get_services()["limits"]
     user_id = callback.from_user.id
 
     if action == "limits":
@@ -124,7 +124,7 @@ async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "wipe_yes":
-        session = get_context(callback.data).session
+        session = db_session()
         from bot.models import Chat, UsageEvent
         from sqlalchemy import delete
 

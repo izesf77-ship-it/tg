@@ -480,6 +480,158 @@ def check_handler_context() -> str:
     return "контекст доступен, обращений event.data не осталось"
 
 
+@step("Хендлеры получают сервисы из контекста, а не из event.data")
+def check_handler_context() -> str:
+    """Регрессия: u Message нет поля data, a u CallbackQuery data — stroka.
+
+    Iz-za etogo obrasheniya vida message.data["services"] pали s
+    AttributeError/TypeError, i lyuboy handler otvechal «Внутренняя ошибка».
+    Servisy teper hranitsya v ContextVar i chitayutsya bez argumentov.
+    """
+    import datetime
+    import re
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.middleware import (
+        _Context, db_session, get_db_user, get_services, is_premium,
+        reset_context, set_context,
+    )
+
+    # 1) Реальные объекты aiogram: убеждаемся в самой причине бага
+    user = User(id=42, is_bot=False, first_name="T")
+    message = TgMessage(
+        message_id=1, date=datetime.datetime.now(),
+        chat=Chat(id=1, type="private"), from_user=user,
+    )
+    callback = CallbackQuery(
+        id="1", from_user=user, chat_instance="x", data="ed:open:1:2"
+    )
+    assert not hasattr(message, "data"), "У Message не должно быть поля data"
+    assert isinstance(callback.data, str), "CallbackQuery.data — строка"
+
+    # 2) Без контекста хелперы обязаны падать понятной ошибкой
+    try:
+        get_services()
+    except RuntimeError as exc:
+        assert "DbSessionMiddleware" in str(exc), str(exc)
+    else:
+        raise AssertionError("get_services() вне контекста должен падать")
+
+    # 3) В контексте всё доступно и без аргументов
+    services = {"chats": "CHATS", "limits": "LIMITS", "user": "USER"}
+    db_user = type("U", (), {"is_premium": True})()
+    token = set_context(
+        _Context(session="SESSION", services=services, db_user=db_user)
+    )
+    try:
+        assert get_services()["chats"] == "CHATS"
+        assert get_db_user() is db_user
+        assert db_session() == "SESSION"
+        assert is_premium() is True
+    finally:
+        reset_context(token)
+
+    # Контекст обязан сбрасываться — иначе сервисы утекут в следующий апдейт
+    try:
+        get_services()
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("контекст не сброшен после reset_context()")
+
+    # 4) В коде хендлеров не осталось обращений через event.data
+    offenders = []
+    pattern = re.compile(
+        r'\b\w+\.data\["(services|db_user|session)"\]'
+        r"|get_services\(\s*\w+\.data"
+        r"|get_db_user\(\s*\w+\.data"
+        r"|is_premium\(\s*\w+\.data"
+    )
+    for path in (ROOT / "bot" / "handlers").glob("*.py"):
+        for num, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{num}")
+    assert not offenders, "Остались обращения event.data: " + ", ".join(offenders)
+
+    # 5) Ключ сервиса — "user", а не "users"
+    assert "users" not in services, "ключа 'users' в сервисах нет"
+    return "контекст работает, обращений event.data не осталось"
+
+
+@step("Хендлер /start отвечает без ошибок (интеграционно)")
+def check_start_handler() -> str:
+    """Полный сценарий: middleware -> хендлер -> БД, на настоящих объектах.
+
+    Именно этот сценарий ломался в продакшене.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.handlers.start import cmd_start
+    from bot.middleware import DbSessionMiddleware
+
+    sent: list = []
+
+    async def fake_answer(self, text, **kwargs):
+        sent.append(str(text)[:60])
+        return self
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052880
+        tg_user = User(id=uid, is_bot=False, first_name="Integr")
+        message = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=uid, type="private"), from_user=tg_user, text="/start",
+        )
+
+        class _St:
+            async def clear(self):
+                return None
+
+        errors: list = []
+
+        async def handler(event, data):
+            try:
+                await cmd_start(event, _St())
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            return None
+
+        TgMessage.answer = fake_answer
+        mw = DbSessionMiddleware()
+        await mw(handler, message, {"event_from_user": tg_user})
+
+        if errors:
+            return "ОШИБКА: " + "; ".join(errors)
+
+        # Пользователь должен появиться в БД
+        from bot.models import User as UserModel
+
+        async with session_scope() as session:
+            row = await session.get(UserModel, uid)
+            if row is None:
+                return "пользователь не зарегистрирован"
+        if not sent:
+            return "хендлер не отправил ни одного сообщения"
+        return f"ok: сообщений {len(sent)}, приветствие: {sent[0][:28]!r}"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert not detail.startswith("ОШИБКА"), detail
+    assert "пользователь не зарегистрирован" not in detail, detail
+    return detail
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -934,6 +1086,7 @@ def main() -> int:
     check_health_server()
     check_proxy_helper()
     check_handler_context()
+    check_start_handler()
     check_backoff()
     check_imports()
     check_dispatcher()

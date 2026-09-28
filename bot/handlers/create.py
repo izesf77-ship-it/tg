@@ -33,9 +33,9 @@ PARTICIPANT_FIELDS = {"name", "username", "display_name", "status", "last_seen"}
 
 async def open_creation(message: Message, state: FSMContext) -> None:
     """Шаг 1: выбор стиля интерфейса (или восстановление черновика)."""
-    chats = get_services(message.data)["chats"]
-    limits = get_services(message.data)["limits"]
-    db_user = get_db_user(message.data)
+    chats = get_services()["chats"]
+    limits = get_services()["limits"]
+    db_user = get_db_user()
 
     # Если уже есть черновик — предлагаем продолжить
     draft = await chats.get_draft(message.from_user.id)
@@ -109,8 +109,8 @@ async def on_style(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    chats = get_services(callback.data)["chats"]
-    users = get_services(callback.data)["user"]
+    chats = get_services()["chats"]
+    users = get_services()["user"]
     try:
         chat, config = await chats.create(callback.from_user.id, style=style)
     except Exception as exc:  # noqa: BLE001
@@ -142,7 +142,7 @@ def _style_def(style: str) -> Optional[dict]:
 
 def _premium_of(callback: CallbackQuery) -> bool:
     """Premium-статус пользователя из данных сессии (безопасно)."""
-    db_user = get_db_user(callback.data)
+    db_user = get_db_user()
     return bool(getattr(db_user, "is_premium", False))
 
 
@@ -151,7 +151,7 @@ def _premium_of(callback: CallbackQuery) -> bool:
 async def on_participant(callback: CallbackQuery, state: FSMContext) -> None:
     """Навигация по участникам и изменение их полей."""
     action = C.action(callback.data)
-    chats = get_services(callback.data)["chats"]
+    chats = get_services()["chats"]
     user_id = callback.from_user.id
     chat_id = C.arg_int(callback.data, 2, -1)
 
@@ -283,7 +283,7 @@ async def on_participant_photo(
     data = await state.get_data()
     chat_id = int(data.get("chat_id", -1))
     index = int(data.get("participant_index", 0))
-    chats = get_services(message.data)["chats"]
+    chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
     participant = CS.ChatService.participant(config, index)
     if participant is None:
@@ -332,7 +332,7 @@ async def on_participant_text(message: Message, state: FSMContext) -> None:
     field = str(data.get("field", "name"))
     value = TX.clean(message.text or "")
 
-    chats = get_services(message.data)["chats"]
+    chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
     participant = CS.ChatService.participant(config, index)
     if participant is None:
@@ -429,8 +429,8 @@ async def on_template(callback: CallbackQuery, state: FSMContext) -> None:
                 callback, "Шаблон доступен в Premium.", alert=True
             )
             return
-        chats = get_services(callback.data)["chats"]
-        users = get_services(callback.data)["user"]
+        chats = get_services()["chats"]
+        users = get_services()["user"]
         config = template.build()
         chat, _ = await chats.create(
             callback.from_user.id, style=config.style, template=key, is_draft=True
@@ -456,7 +456,7 @@ async def on_template(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_resume(callback: CallbackQuery, state: FSMContext) -> None:
     """Продолжить незавершённую переписку."""
     chat_id = C.arg_int(callback.data, 0, -1)
-    chats = get_services(callback.data)["chats"]
+    chats = get_services()["chats"]
     config = await chats.get_config(callback.from_user.id, chat_id)
     await state.set_state(Flow.editor)
     await state.update_data(chat_id=chat_id, page=0)
@@ -471,7 +471,7 @@ async def on_resume(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith(C.S_EDIT + ":restart"))
 async def on_restart(callback: CallbackQuery, state: FSMContext) -> None:
     """Удалить черновик и начать новую переписку."""
-    chats = get_services(callback.data)["chats"]
+    chats = get_services()["chats"]
     await chats.clear_drafts(callback.from_user.id)
     await state.set_state(Flow.style)
     premium = _premium_of(callback)

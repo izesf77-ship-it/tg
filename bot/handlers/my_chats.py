@@ -25,7 +25,7 @@ PAGE_SIZE = MK.PAGE_SIZE
 
 async def open_my_chats(target, state: FSMContext, page: int = 0) -> None:
     """Показать список сохранённых переписок."""
-    chats = get_services(target.data)["chats"]
+    chats = get_services()["chats"]
     total = await chats.count_saved(target.from_user.id)
     items = await chats.list_saved(
         target.from_user.id, limit=PAGE_SIZE, offset=page * PAGE_SIZE
@@ -71,7 +71,7 @@ def _open_keyboard(chat_id: int, is_draft: bool):
 async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
     """Действия со списком переписок."""
     action = C.action(callback.data)
-    chats = get_services(callback.data)["chats"]
+    chats = get_services()["chats"]
     user_id = callback.from_user.id
 
     if action == "noop":

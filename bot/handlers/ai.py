@@ -34,10 +34,10 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     if len(prompt) > MAX_PROMPT:
         prompt = prompt[:MAX_PROMPT]
 
-    limits = get_services(message.data)["limits"]
-    users = get_services(message.data)["user"]
-    chats = get_services(message.data)["chats"]
-    user = get_db_user(message.data)
+    limits = get_services()["limits"]
+    users = get_services()["user"]
+    chats = get_services()["chats"]
+    user = get_db_user()
 
     if not ai_service.enabled:
         await message.answer(T.HELP_AI_DISABLED, parse_mode=screens.PARSE_MODE)

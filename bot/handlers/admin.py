@@ -136,7 +136,7 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "limits":
-        limits = get_services(callback.data)["limits"]
+        limits = get_services()["limits"]
         current = limits.overrides() or _default_limits()
         await screens.show(
             callback,
@@ -146,7 +146,7 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "limits_reset":
-        limits = get_services(callback.data)["limits"]
+        limits = get_services()["limits"]
         limits._overrides.clear()  # noqa: SLF001 - намеренный сброс к .env
         logger.info("Админ %s сбросил лимиты", callback.from_user.id)
         await screens.show(
@@ -231,7 +231,7 @@ async def on_limit_value(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое неотрицательное число. Например: 30")
         return
 
-    limits = get_services(message.data)["limits"]
+    limits = get_services()["limits"]
     limits.set_override(key, value)
     logger.info("Админ %s изменил лимит %s=%s", message.from_user.id, key, value)
     await state.clear()

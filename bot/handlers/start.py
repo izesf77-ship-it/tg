@@ -35,7 +35,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     # Автосохранение: предлагаем продолжить черновик
     # Сервисы берём из middleware-данных, а НЕ из message.data:
     # у Message нет такого поля (у CallbackQuery оно занято строкой).
-    chats = get_services(message.data)["chats"]
+    chats = get_services()["chats"]
     try:
         draft = await chats.get_draft(message.from_user.id)
     except Exception as exc:  # noqa: BLE001 - черновик не должен ломать /start

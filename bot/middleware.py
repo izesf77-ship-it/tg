@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar, Token
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, User as TgUser
 
 from bot.database.engine import session_scope
-from bot.services import chat_service, limit_service, user_service
+from bot.services.chat_service import bind as bind_chats
+from bot.services.limit_service import bind as bind_limits
+from bot.services.user_service import bind as bind_user
 
 logger = logging.getLogger(__name__)
 
@@ -27,35 +30,49 @@ class _Context:
         self.db_user = db_user
 
 
-def get_context(data: Dict[str, Any]) -> _Context:
-    """Достать контекст из данных события.
+# Контекст хранится в ContextVar, а НЕ в объекте события.
+# Причина: у aiogram Message нет поля data, а у CallbackQuery поле data
+# занято строкой callback-данных — достать services из объекта невозможно.
+_ctx_var: ContextVar[_Context] = ContextVar("bot_context", default=None)
 
-    aiogram не кладёт ``data`` в объект Message, а поле ``data`` у
-    CallbackQuery занято строкой callback-данных. Поэтому хендлеры должны
-    получать сервисы отсюда, а не через ``event.data``.
-    """
-    ctx = data.get(CTX_KEY)
+
+def set_context(ctx: _Context) -> Token:
+    """Записать контекст обработки текущего события."""
+    return _ctx_var.set(ctx)
+
+
+def reset_context(token: Token) -> None:
+    _ctx_var.reset(token)
+
+
+def get_context() -> _Context:
+    """Текущий контекст обработки события."""
+    ctx = _ctx_var.get()
     if ctx is None:
-        # Страховка на случай прямого вызова хендлера в тестах
-        ctx = _Context(
-            session=data.get("session"),
-            services=data.get("services") or {},
-            db_user=data.get("db_user"),
+        raise RuntimeError(
+            "Контекст не инициализирован: хендлер вызван без DbSessionMiddleware"
         )
     return ctx
 
 
-def get_services(data: Dict[str, Any]) -> Dict[str, Any]:
-    return get_context(data).services
+def get_services() -> Dict[str, Any]:
+    """Сервисы текущего события: chats, limits, user."""
+    return get_context().services
 
 
-def get_db_user(data: Dict[str, Any]):
-    return get_context(data).db_user
+def get_db_user():
+    """Пользователь из БД."""
+    return get_context().db_user
 
 
-def is_premium(data: Dict[str, Any]) -> bool:
+def db_session():
+    """Активная сессия БД."""
+    return get_context().session
+
+
+def is_premium() -> bool:
     """Premium-статус текущего пользователя (безопасно)."""
-    return bool(getattr(get_db_user(data), "is_premium", False))
+    return bool(getattr(get_db_user(), "is_premium", False))
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -81,44 +98,48 @@ class DbSessionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         async with session_scope() as session:
-            user_service.bind(session)
-            limit_service.bind(session)
-            chat_service.bind(session)
+            # bind() создаёт экземпляр сервиса, привязанный к сессии,
+            # и возвращает его. Раньше здесь вызывался метод
+            # user_service.bind(session) — но user_service это модуль,
+            # а bind() — функция, поэтому было AttributeError.
+            users_svc = bind_user(session)
+            limits_svc = bind_limits(session)
+            chats_svc = bind_chats(session)
             data["session"] = session
             # Ключи сервисов: "chats", "limits", "user" (без "users").
-            data["services"] = {
-                "user": user_service,
-                "limits": limit_service,
-                "chats": chat_service,
+            services = {
+                "user": users_svc,
+                "limits": limits_svc,
+                "chats": chats_svc,
             }
-            # Единая точка доступа для хендлеров
-            data[CTX_KEY] = _Context(
-                session=session,
-                services=data["services"],
-                db_user=None,
-            )
+            data["services"] = services
             try:
-                user = await user_service.register(tg_user)
+                user = await users_svc.register(tg_user)
             except Exception as exc:  # noqa: BLE001 - БД не должна ронять бота
                 logger.exception("Не удалось зарегистрировать пользователя")
-                return await handler(event, data)
+                user = None
 
             data["db_user"] = user
-            data[CTX_KEY] = _Context(
-                session=session, services=data["services"], db_user=user
-            )
-            if user.is_banned:
+            if user is not None and user.is_banned:
                 logger.info("Попытка входа заблокированного пользователя %s", user.id)
                 await _notify_banned(event)
                 return None
 
-            # Антиспам: фиксируем действия пользователя
-            try:
-                await limit_service.log_action(user.id)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Не удалось записать действие: %s", exc)
+            if user is not None:
+                # Антиспам: фиксируем действия пользователя
+                try:
+                    await limits_svc.log_action(user.id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Не удалось записать действие: %s", exc)
 
-            return await handler(event, data)
+            # Контекст в ContextVar: хендлеры читают сервисы без аргументов
+            token = set_context(
+                _Context(session=session, services=services, db_user=user)
+            )
+            try:
+                return await handler(event, data)
+            finally:
+                reset_context(token)
 
 
 async def _notify_banned(event: TelegramObject) -> None:
@@ -173,5 +194,8 @@ __all__ = [
     "get_context",
     "get_services",
     "get_db_user",
+    "db_session",
     "is_premium",
+    "set_context",
+    "reset_context",
 ]
