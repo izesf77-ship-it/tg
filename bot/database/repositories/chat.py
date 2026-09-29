@@ -53,6 +53,15 @@ class ChatRepository:
         data: Any = chat.config
         return ChatConfig.from_json(data)
 
+    def load_config_sync(self, chat: Chat) -> ChatConfig:
+        """Синхронная загрузка конфига уже загруженной модели.
+
+        Нужна там, где объект ``Chat`` уже есть в сессии, а ждать
+        дополнительный SELECT не требуется (например, проверка черновика
+        на наличие заполненных участников при входе в бота).
+        """
+        return ChatConfig.from_json(chat.config)
+
     async def duplicate(self, chat: Chat) -> Chat:
         data = copy.deepcopy(dict(chat.config or {}))
         new_config = ChatConfig.from_json(data)

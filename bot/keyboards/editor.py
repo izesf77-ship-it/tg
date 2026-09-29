@@ -13,6 +13,17 @@ from bot.utils import callbacks as C
 
 BACK_EDITOR = C.cb(C.S_EDIT, "home")
 
+
+def back_to_list(chat_id: int) -> str:
+    """Кнопка «Назад» из вложенных экранов редактора → список сообщений.
+
+    Раньше здесь стоял ``ed:back:<chat_id>``, а хендлер на ``back``
+    открывал экран УЧАСТНИКОВ. Из-за этого «Назад» из меню времени,
+    реакций, медиа и из предпросмотра уводил в сторону, а данные
+    правки терялись из виду.
+    """
+    return C.cb(C.S_EDIT, "list", chat_id)
+
 MESSAGE_ICONS = {
     "text": "💬", "image": "🖼", "voice": "🎤", "file": "📎",
     "sticker": "🩻", "service": "ℹ️", "date": "📅", "forward": "↪",
@@ -107,22 +118,14 @@ def editor_keyboard(
             )
         )
     kb.row(
-        InlineKeyboardButton(
-            text="👤 Участники", callback_data=C.cb(C.S_EDIT, "participants", chat_id)
-        ),
-        InlineKeyboardButton(
-            text="⚙️ Настройки", callback_data=C.cb(C.S_EDIT, "settings", chat_id)
-        ),
+        InlineKeyboardButton(text="👤 Участники", callback_data=C.cb(C.S_EDIT, "participants", chat_id)),
+        InlineKeyboardButton(text="⚙️ Настройки", callback_data=C.cb(C.S_EDIT, "settings", chat_id)),
     )
     kb.row(
-        InlineKeyboardButton(
-            text="👀 Предпросмотр", callback_data=C.cb(C.S_EDIT, "preview", chat_id)
-        ),
-        InlineKeyboardButton(
-            text="✅ Готово", callback_data=C.cb(C.S_EDIT, "done", chat_id)
-        ),
+        InlineKeyboardButton(text="👀 Предпросмотр", callback_data=C.cb(C.S_EDIT, "preview", chat_id)),
+        InlineKeyboardButton(text="✅ Готово", callback_data=C.cb(C.S_EDIT, "done", chat_id)),
     )
-    return with_back(kb, BACK_EDITOR).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def message_actions_menu(index: int, chat_id: int, config: ChatConfig) -> InlineKeyboardMarkup:
@@ -168,7 +171,7 @@ def message_actions_menu(index: int, chat_id: int, config: ChatConfig) -> Inline
             text="🗑 Удалить", callback_data=C.cb(C.S_EDIT, "del", index, chat_id)
         )
     )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def add_message_menu(chat_id: int) -> InlineKeyboardMarkup:
@@ -190,7 +193,7 @@ def add_message_menu(chat_id: int) -> InlineKeyboardMarkup:
                 text=label, callback_data=C.cb(C.S_EDIT, "new", key, chat_id)
             )
         )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def author_menu(
@@ -199,38 +202,52 @@ def author_menu(
     action: str = "new",
     index: int = -1,
 ) -> InlineKeyboardMarkup:
-    """Выбор отправителя сообщения."""
+    """Выбор отправителя сообщения.
+
+    Формат кнопки: ``ed:pickauthor:<i>:<action>:<index>:<chat_id>``.
+    ``chat_id`` обязателен в конце, ``index`` — предпоследний, поэтому
+    ``C.chat_id_of`` / ``C.index_of`` читают их одинаково для всех кнопок.
+    """
     kb = InlineKeyboardBuilder()
     for i, label in enumerate(author_labels):
         kb.row(
             InlineKeyboardButton(
                 text=f"👤 {label}",
-                callback_data=C.cb(C.S_EDIT, "pickauthor", i, chat_id, action, index),
+                callback_data=C.cb(C.S_EDIT, "pickauthor", i, action, index, chat_id),
             )
         )
-    return with_back(kb, C.cb(C.S_EDIT, "addmenu", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def time_menu(chat_id: int, index: int = -1) -> InlineKeyboardMarkup:
-    """Выбор времени сообщения."""
+    """Выбор времени сообщения.
+
+    Формат кнопок: ``ed:settime:now:<index>:<chat_id>`` и
+    ``ed:manualtime:<index>:<chat_id>``.
+
+    Раньше здесь стояло ``settime:now:<chat_id>:<index>`` — ``chat_id``
+    оказывался НЕ последним, и ``C.chat_id_of`` возвращал индекс
+    сообщения. Пользователь получал «Переписка не найдена» ровно в тот
+    момент, когда устанавливал время.
+    """
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(
             text="🕐 Текущее время",
-            callback_data=C.cb(C.S_EDIT, "settime", "now", chat_id, index),
+            callback_data=C.cb(C.S_EDIT, "settime", "now", index, chat_id),
         )
     )
     kb.row(
         InlineKeyboardButton(
             text="⌨️ Указать вручную",
-            callback_data=C.cb(C.S_EDIT, "manualtime", chat_id, index),
+            callback_data=C.cb(C.S_EDIT, "manualtime", index, chat_id),
         )
     )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def reaction_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
-    """Выбор реакции."""
+    """Выбор реакции: ``ed:setreact:<emoji>:<index>:<chat_id>``."""
     kb = InlineKeyboardBuilder()
     emojis = ["👍", "❤️", "😂", "🔥", "😮", "😢", "🎉", "🙏", "👀", "🤔"]
     for i in range(0, len(emojis), 5):
@@ -238,7 +255,7 @@ def reaction_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
             *[
                 InlineKeyboardButton(
                     text=emoji,
-                    callback_data=C.cb(C.S_EDIT, "setreact", emoji, chat_id, index),
+                    callback_data=C.cb(C.S_EDIT, "setreact", emoji, index, chat_id),
                 )
                 for emoji in emojis[i : i + 5]
             ]
@@ -246,14 +263,14 @@ def reaction_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
     kb.row(
         InlineKeyboardButton(
             text="🗑 Убрать реакцию",
-            callback_data=C.cb(C.S_EDIT, "setreact", "-", chat_id, index),
+            callback_data=C.cb(C.S_EDIT, "setreact", "-", index, chat_id),
         )
     )
-    return with_back(kb, C.cb(C.S_EDIT, "open", index, chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def type_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
-    """Смена типа сообщения."""
+    """Смена типа сообщения: ``ed:settype:<key>:<index>:<chat_id>``."""
     kb = InlineKeyboardBuilder()
     options = [
         ("text", "💬 Текст"),
@@ -267,10 +284,10 @@ def type_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
     for key, label in options:
         kb.row(
             InlineKeyboardButton(
-                text=label, callback_data=C.cb(C.S_EDIT, "settype", key, chat_id, index)
+                text=label, callback_data=C.cb(C.S_EDIT, "settype", key, index, chat_id)
             )
         )
-    return with_back(kb, C.cb(C.S_EDIT, "open", index, chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def media_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
@@ -294,7 +311,7 @@ def media_menu(index: int, chat_id: int) -> InlineKeyboardMarkup:
             callback_data=C.cb(C.S_EDIT, "nomedia", index, chat_id),
         )
     )
-    return with_back(kb, C.cb(C.S_EDIT, "open", index, chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def reply_target_menu(config: ChatConfig, chat_id: int) -> InlineKeyboardMarkup:
@@ -308,7 +325,7 @@ def reply_target_menu(config: ChatConfig, chat_id: int) -> InlineKeyboardMarkup:
                 callback_data=C.cb(C.S_EDIT, "replytarget", index, chat_id),
             )
         )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def preview_keyboard(chat_id: int) -> InlineKeyboardMarkup:
@@ -316,7 +333,7 @@ def preview_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(
-            text="✏️ Редактировать", callback_data=C.cb(C.S_EDIT, "back", chat_id)
+            text="✏️ Редактировать", callback_data=back_to_list(chat_id)
         ),
         InlineKeyboardButton(
             text="➕ Добавить сообщение",
@@ -331,7 +348,7 @@ def preview_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             text="✅ Завершить", callback_data=C.cb(C.S_EDIT, "done", chat_id)
         ),
     )
-    return with_back(kb, C.cb(C.S_EDIT, "back", chat_id)).as_markup()
+    return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
 def done_keyboard(chat_id: int) -> InlineKeyboardMarkup:
@@ -356,6 +373,7 @@ def done_keyboard(chat_id: int) -> InlineKeyboardMarkup:
 
 __all__ = [
     "BACK_EDITOR",
+    "back_to_list",
     "MESSAGE_ICONS",
     "message_label",
     "editor_keyboard",

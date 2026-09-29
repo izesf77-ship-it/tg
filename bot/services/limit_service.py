@@ -72,16 +72,25 @@ class LimitService:
 
     # --- Админские переопределения --------------------------------
     async def set_override(self, key: str, value: int) -> None:
-        """Сохранить лимит в БД (и обновить кэш)."""
+        """Сохранить лимит в БД (и обновить кэш).
+
+        Кэш обновляется ВСЕГДА, даже если сессии БД нет: иначе вызов
+        падал с ``AttributeError: no attribute 'session'``, и новое
+        значение лимита не применялось вовсе.
+        """
         number = int(value)
         cached[key] = number
-        row = await self.session.get(Setting, key)
+        session = getattr(self, "session", None)
+        if session is None:
+            logger.warning("Сессия БД недоступна: лимит %s применён только в памяти", key)
+            return
+        row = await session.get(Setting, key)
         if row is None:
-            self.session.add(Setting(key=key, value=str(number)))
+            session.add(Setting(key=key, value=str(number)))
         else:
             row.value = str(number)
             row.updated_at = utcnow()
-        await self.session.commit()
+        await session.commit()
         logger.info("Лимит %s = %s (сохранён в БД)", key, number)
 
     async def reset_overrides(self) -> int:

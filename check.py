@@ -1273,7 +1273,10 @@ def check_limits() -> str:
         assert premium.allowed and premium.limit == 100
         service.usage.count = 0
         assert (await service.check_spam(1)).allowed
-        service.set_override("limit_image_per_hour", 5)
+        # set_override — coroutine, раньше здесь стоял вызов БЕЗ await:
+        # coroutine создавался и тут же терялся, кэш лимита не менялся,
+        # и проверка падала на следующем assert.
+        await service.set_override("limit_image_per_hour", 5)
         assert service.value("limit_image_per_hour") == 5
         assert bool(LimitResult(True)) is True
         return "20/час, 100/час Pro, антиспам, override"
@@ -1492,6 +1495,384 @@ def check_broken_inputs() -> str:
     return f"{img.width}x{img.height}, битые файлы обработаны"
 
 
+class _FakeSent:
+    """Объект «отправленного сообщения» для заглушек aiogram."""
+
+    async def edit_text(self, *args, **kwargs):
+        return self
+
+    async def delete(self, *args, **kwargs):
+        return self
+
+    async def answer(self, *args, **kwargs):
+        return self
+
+
+class _FakeState:
+    """Минимальный FSMContext с хранилищем в памяти."""
+
+    def __init__(self):
+        self._state = None
+        self.data = {}
+
+    async def set_state(self, s):
+        self._state = s
+
+    async def get_state(self):
+        return self._state
+
+    async def update_data(self, **kw):
+        self.data.update(kw)
+
+    async def get_data(self):
+        return dict(self.data)
+
+    async def clear(self):
+        self._state = None
+        self.data = {}
+
+
+@step("Маршрутизация кнопок: у каждого действия свой хендлер")
+def check_callback_routing() -> str:
+    """Регрессия: catch-all-хендлер перехватывал чужие кнопки.
+
+    ``on_editor`` зарегистрирован первым и фильтровался по префиксу
+    ``ed:``, поэтому перехватывал ВСЕ остальные действия редактора:
+    «Готово», «Предпросмотр», «Сохранить», «Удалить», «Настройки»,
+    «Очистить», выбор реакции/типа/времени. Вместо своей логики они
+    падали в обработку сообщения и отвечали «Сообщение не найдено».
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.handlers import create as CR, editor as ED, my_chats as MC
+    from bot.utils import callbacks as C
+
+    async def hit(router, data: str) -> str:
+        user = User(id=1, is_bot=False, first_name="P")
+        msg = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=1, type="private"), from_user=user,
+        )
+        cb = CallbackQuery(
+            id="1", from_user=user, chat_instance="x", message=msg, data=data
+        )
+        for h in router.callback_query.handlers:
+            ok, _ = await h.check(cb, event_from_user=user)
+            if ok:
+                return getattr(h.callback, "__name__", "?")
+        return "НЕ ОБРАБАТЫВАЕТСЯ"
+
+    cases = [
+        (ED.router, C.cb(C.S_EDIT, "done", 1), "on_done"),
+        (ED.router, C.cb(C.S_EDIT, "preview", 1), "on_preview"),
+        (ED.router, C.cb(C.S_EDIT, "save", 1), "on_save"),
+        (ED.router, C.cb(C.S_EDIT, "drop", 1), "on_drop"),
+        (ED.router, C.cb(C.S_EDIT, "open_done", 1), "on_open_done"),
+        (ED.router, C.cb(C.S_EDIT, "clear", 1), "on_clear_messages"),
+        (ED.router, C.cb(C.S_EDIT, "setopt", "time", 1), "on_set_option"),
+        (ED.router, C.cb(C.S_EDIT, "setstyle", "telegram", 1), "on_set_style"),
+        (ED.router, C.cb(C.S_EDIT, "setdisc", "EN", 1), "on_set_disclaimer"),
+        (ED.router, C.cb(C.S_EDIT, "settime", "now", 0, 1), "on_set_time"),
+        (ED.router, C.cb(C.S_EDIT, "manualtime", 0, 1), "on_manual_time"),
+        (ED.router, C.cb(C.S_EDIT, "pickauthor", 0, "new", -1, 1), "on_pick_author"),
+        # Эти по-прежнему обслуживает общий on_editor
+        (ED.router, C.cb(C.S_EDIT, "open", 0, 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "list", 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "add", 0, 1), "on_editor"),
+        (ED.router, C.cb(C.S_EDIT, "setreact", "X", 0, 1), "on_editor"),
+        # Участники и «Мои переписки»
+        (CR.router, C.cb(C.S_PART, "open", 0, 1), "on_participant"),
+        (CR.router, C.cb(C.S_PART, "next", 1), "on_participant"),
+        (MC.router, C.cb(C.S_MY, "open", 1), "on_my_chats"),
+        (MC.router, C.cb(C.S_MY, "cancel_del"), "on_my_chats"),
+    ]
+
+    async def run() -> str:
+        wrong = []
+        for router, data, expected in cases:
+            actual = await hit(router, data)
+            if actual != expected:
+                wrong.append(f"{data}: ожидали {expected}, сработал {actual}")
+        assert not wrong, "; ".join(wrong)
+        return f"{len(cases)} кнопок — каждая попала в свой хендлер"
+
+    return asyncio.run(run())
+
+
+@step("Ввод текста и выбор времени (регрессия из логов)")
+def check_time_flow_regression() -> str:
+    """Сценарий из логов: написать текст → нажать «Текущее время».
+
+    Раньше цепочка on_time_text → _commit_message → _save_and_back падала
+    с AttributeError, и сообщение не появлялось вовсе.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.database.repositories import ChatRepository
+    from bot.middleware import DbSessionMiddleware
+    from bot.schemas import ChatConfig
+    from bot.utils import callbacks as C
+
+    errors: list = []
+    shown: list = []
+
+    async def fake_show(event, text, keyboard=None, **kw):
+        shown.append(str(text)[:60])
+        return None
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052882
+        tg_user = User(id=uid, is_bot=False, first_name="PAUK88")
+
+        import bot.screens as SC
+
+        SC.show = fake_show
+        SC.safe_answer = lambda *a, **kw: asyncio.sleep(0)
+
+        async with session_scope() as session:
+            chat = await ChatRepository(session).create(
+                user_id=uid, config=ChatConfig(title="Тест", style="telegram")
+            )
+            chat_id = chat.id
+
+        state = _FakeState()
+
+        async def send(text: str):
+            """Отправить текстовое сообщение через настоящий middleware.
+
+            Методы Telegram монтируются на объект явно: иначе ``answer()``
+            на несмонтированной модели aiogram бросает RuntimeError. Это
+            особенность тестовой заглушки, в боте всё работает штатно.
+            """
+            msg = TgMessage(
+                message_id=99, date=datetime.datetime.now(),
+                chat=Chat(id=uid, type="private"), from_user=tg_user, text=text,
+            )
+            # Модели aiogram — pydantic с frozen=True, поэтому обычное
+            # присваивание запрещено; обходим через object.__setattr__.
+            for name in ("answer", "edit_text", "edit_media", "delete"):
+                object.__setattr__(msg, name, _fake_method(name))
+            return msg
+
+        sent: list = []
+
+        def _fake_method(name: str):
+            async def wrapper(*args, **kwargs):
+                sent.append(name)
+                return _FakeSent()
+
+            return wrapper
+
+        async def route(event):
+            """Отработать шаг, соответствующий ТЕКУЩЕМУ состоянию FSM.
+
+            Состояние читается в момент вызова: иначе после первого шага
+            тест продолжал бы слать текст в устаревший обработчик.
+            """
+            from bot.handlers.editor import on_add_text, on_time_text
+            from bot.states import Flow
+
+            step = await state.get_state()
+            if step == Flow.add_text:
+                await on_add_text(event, state)
+            elif step == Flow.add_time:
+                await on_time_text(event, state)
+            else:
+                errors.append(f"неожиданное состояние: {step}")
+
+        async def handle(msg):
+            async def handler(event, _d):
+                try:
+                    await route(event)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{type(exc).__name__}: {exc}")
+
+            await DbSessionMiddleware()(
+                handler, msg, {"event_from_user": tg_user}
+            )
+
+        # Шаг 1. Инициализируем состояние как после «Добавить сообщение».
+        from bot.states import Flow
+
+        await state.set_state(Flow.add_text)
+        await state.update_data(
+            chat_id=chat_id, kind="text", side=0, message_index=-1,
+            field="", pending_text="",
+        )
+
+        # Шаг 2. Пользователь пишет текст сообщения.
+        await handle(await send("Привет, это тест"))
+
+        # Шаг 3. Затем задаёт время — так работал баг из логов.
+        assert (await state.get_state()) == Flow.add_time, "бот не спросил время"
+        await handle(await send("12:41"))
+
+        assert not errors, "ошибки: " + "; ".join(errors)
+
+        async with session_scope() as session:
+            repo = ChatRepository(session)
+            cfg = await repo.load_config(await repo.get(chat_id))
+
+        assert len(cfg.messages) == 1, (
+            f"сообщение не сохранилось после выбора времени: {len(cfg.messages)}"
+        )
+        assert cfg.messages[0].text == "Привет, это тест", cfg.messages[0].text
+        return f"chat_id={chat_id}, сообщение сохранено: {cfg.messages[0].preview(20)!r}"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail, "сценарий не отработал"
+    return detail
+
+
+@step("Сценарий: сообщение → время → «Назад» (жалобы пользователя)")
+def check_user_journey() -> str:
+    """Полный прогон по жалобам: сохранение при возврате и «Переписка не найдена».
+
+    Сценарий повторяет то, что делал пользователь:
+      1. добавил сообщение и выбрал время — раньше падало
+         «Переписка не найдена»;
+      2. нажал «Назад» — должен вернуться в редактор;
+      3. «потерял» FSM (рестарт бота) и нажал кнопку — раньше тоже
+         было «Переписка не найдена»;
+      4. отредактировал сообщение — правка не должна создавать новое.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.database.repositories import ChatRepository
+    from bot.keyboards import editor as EK
+    from bot.middleware import DbSessionMiddleware
+    from bot.schemas import ChatConfig
+    from bot.utils import callbacks as C
+
+    shown: list = []
+    errors: list = []
+
+    async def fake_show(event, text, keyboard=None, **kw):
+        shown.append(str(text)[:70])
+        return None
+
+    async def fake_safe_answer(event, text=None, alert=False, **kw):
+        if text:
+            errors.append(text)
+        return None
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052881
+        tg_user = User(id=uid, is_bot=False, first_name="PAUK88")
+        message = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=uid, type="private"), from_user=tg_user,
+        )
+
+        async with session_scope() as session:
+            chat = await ChatRepository(session).create(
+                user_id=uid, config=ChatConfig(title="Тест", style="telegram")
+            )
+            chat_id = chat.id
+
+        import bot.screens as SC
+
+        SC.safe_answer = fake_safe_answer
+        SC.show = fake_show
+
+        def cb(data: str) -> CallbackQuery:
+            return CallbackQuery(
+                id="1", from_user=tg_user, chat_instance="x",
+                message=message, data=data,
+            )
+
+        async def fire(data: str, state):
+            """Прогнать callback через реальный middleware и хендлеры."""
+            from bot.handlers.editor import on_editor, on_set_time
+
+            async def handler(event, _d):
+                try:
+                    if C.action(data) == "settime":
+                        await on_set_time(event, state)
+                    else:
+                        await on_editor(event, state)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{C.action(data)}: {type(exc).__name__}: {exc}")
+
+            await DbSessionMiddleware()(
+                handler, cb(data), {"event_from_user": tg_user}
+            )
+
+        async def load():
+            async with session_scope() as session:
+                repo = ChatRepository(session)
+                return await repo.load_config(await repo.get(chat_id))
+
+        state = _FakeState()
+
+        # 1. Добавляем сообщение (отправитель 0 — тот, кто слева).
+        await fire(C.cb(C.S_EDIT, "add", 0, chat_id), state)
+
+        # 2. Меню времени для НОВОГО сообщения: chat_id обязан быть реальным.
+        #    Раньше _ask_time() передавал (-1, -1) → «Переписка не найдена».
+        menu = EK.time_menu(chat_id, -1)
+        settime_btns = [
+            b for row in menu.inline_keyboard for b in row
+            if C.action(b.callback_data) == "settime"
+        ]
+        assert settime_btns, "в меню времени нет кнопки"
+        for b in settime_btns:
+            assert C.chat_id_of(b.callback_data) == chat_id, (
+                "кнопка времени несёт chat_id="
+                f"{C.chat_id_of(b.callback_data)}: {b.callback_data}"
+            )
+
+        # Нажимаем «Текущее время» с ПОЛНОСТЬЮ пустым состоянием: так
+        # работает бот, перезапущенный между вводом текста и выбором
+        # времени. Раньше кнопка несла chat_id=-1, и падал ChatNotFound.
+        await fire(settime_btns[0].callback_data, _FakeState())
+        cfg = await load()
+        assert len(cfg.messages) == 1, f"сообщение не создалось: {len(cfg.messages)}"
+        assert not errors, "ошибки: " + "; ".join(errors)
+
+        cfg = await load()
+        assert len(cfg.messages) == 1, f"сообщение не создалось: {len(cfg.messages)}"
+        assert not errors, "ошибки: " + "; ".join(errors)
+
+        # 3. «Назад» ведёт в список сообщений, а не на экран участников.
+        back = EK.back_to_list(chat_id)
+        assert C.action(back) == "list", "кнопка «Назад» ведёт не в список"
+        assert C.chat_id_of(back) == chat_id
+        await fire(back, state)
+
+        # 4. Потеря FSM (рестарт бота, MemoryStorage) — кнопка всё ещё работает.
+        fresh = _FakeState()
+        await fire(C.cb(C.S_EDIT, "open", 0, chat_id), fresh)
+        assert not errors, "после потери FSM: " + "; ".join(errors)
+
+        return f"chat_id={chat_id}, сообщений={len(cfg.messages)}, FSM-потеря пережита"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail, "сценарий не отработал"
+    return detail
+
+
 def main() -> int:
     _emit("=" * 62)
     _emit("  САМОПРОВЕРКА: Telegram Chat Constructor Bot")
@@ -1539,6 +1920,11 @@ def main() -> int:
 
     section("База данных (полный сценарий)")
     check_database_flow()
+
+    section("Пользовательский сценарий (регрессии)")
+    check_callback_routing()
+    check_time_flow_regression()
+    check_user_journey()
 
     passed = sum(1 for good, _, _ in RESULTS if good)
     failed = len(RESULTS) - passed

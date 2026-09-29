@@ -86,9 +86,17 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
         await open_my_chats(callback, state, page)
         return
 
+    if action == "cancel_del":
+        # Проверка chat_id ниже: у этой кнопки его нет вовсе, и раньше
+        # «↩️ Отмена» отвечала «Переписка не найдена».
+        await open_my_chats(callback, state, 0)
+        return
+
     chat_id = C.chat_id_of(callback.data)
     if chat_id < 0:
-        await screens.safe_answer(callback, "Переписка не найдена.", alert=True)
+        await screens.safe_answer(
+            callback, "Эта кнопка устарела. Откройте переписку заново.", alert=True
+        )
         return
 
     if action == "open":
@@ -127,10 +135,6 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
             f"🗑 <b>Удалить переписку?</b>\n\n{T.esc(title)}\nДействие нельзя отменить.",
             MK.confirm_delete_chat(chat_id),
         )
-        return
-
-    if action == "cancel_del":
-        await open_my_chats(callback, state, 0)
         return
 
     if action == "del_yes":
