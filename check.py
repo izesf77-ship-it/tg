@@ -2011,6 +2011,146 @@ def check_user_journey() -> str:
     return detail
 
 
+@step("Хендлеры переживают None-пользователя и callback без сообщения")
+def check_none_safety() -> str:
+    """Регрессия: AttributeError при db_user=None и у callback.message=None.
+
+    Найдено три падения одного класса:
+
+    1. ``menus.open_settings`` и ``ai.on_ai_prompt`` читали ``user.is_premium``
+       напрямую. Если регистрация в БД провалилась (база занята), middleware
+       откатывает сессию и кладёт ``None`` — экран падал с AttributeError.
+    2. ``callback.message.answer(...)`` вызывался без проверки: у CallbackQuery
+       поле ``message`` бывает ``None``, и вопрос пользователю не уходил.
+    3. Ветка ``show_editor(edit=False)`` брала ``target.message.bot`` — тоже
+       падала бы при ``None``.
+
+    Проверяем и код (статически), и поведение (реальными объектами aiogram).
+    """
+    import ast
+    import asyncio
+    import pathlib
+
+    # --- 1. Статически: нет прямых обращений к .is_premium у db_user -----
+    root = pathlib.Path(__file__).resolve().parent
+    offenders: list[str] = []
+    for name in ("menus.py", "ai.py", "create.py", "editor.py", "my_chats.py"):
+        src = (root / "bot" / "handlers" / name).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            # user.is_premium / db_user.is_premium — где user = get_db_user()
+            if not isinstance(node, ast.Attribute):
+                continue
+            if node.attr != "is_premium":
+                continue
+            base = node.value
+            if isinstance(base, ast.Name) and base.id in (
+                "user", "db_user", "u", "owner"
+            ):
+                offenders.append(f"{name}:{node.lineno} {base.id}.is_premium")
+    assert not offenders, "прямой доступ к is_premium: " + ", ".join(offenders)
+
+    # --- 2. Статически: нет голых callback.message.answer -----------------
+    #    Вызов допустим, если он находится внутри ``if <...>.message:``,
+    #    поэтому сначала собираем строки, защищённые такой проверкой.
+    bare: list[str] = []
+    for path in (root / "bot" / "handlers").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guarded: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            # ищем проверку «.message» в условии
+            mentions = any(
+                isinstance(sub, ast.Attribute) and sub.attr == "message"
+                for sub in ast.walk(node.test)
+            )
+            if not mentions:
+                continue
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if hasattr(sub, "lineno"):
+                        guarded.add(sub.lineno)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Await):
+                continue
+            call = node.value
+            if not isinstance(call, ast.Call):
+                continue
+            fn = call.func
+            if not isinstance(fn, ast.Attribute) or fn.attr != "answer":
+                continue
+            # цепочка вида callback.message.answer(...)
+            owner = fn.value
+            if (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "message"
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id in ("callback", "c", "q")
+            ):
+                # строка самого вызова и несколько строк выше — аргументы
+                span = range(node.lineno, node.lineno - 6, -1)
+                if any(line in guarded for line in span):
+                    continue
+                bare.append(f"{path.name}:{node.lineno}")
+    assert not bare, "callback.message.answer без проверки: " + ", ".join(bare)
+
+    # --- 3. Поведение: screens.ask переживает message=None ----------------
+    async def run() -> list[str]:
+        from datetime import datetime, timezone
+
+        from aiogram.types import CallbackQuery, Chat, Message, User as TgUser
+
+        from bot import screens
+
+        tg_user = TgUser(id=555, is_bot=False, first_name="T")
+        chat = Chat(id=555, type="private")
+        notes: list[str] = []
+
+        # 3a. callback БЕЗ сообщения: должен быть False, а не исключение.
+        bare_cb = CallbackQuery(
+            id="q1", from_user=tg_user, chat_instance="x", data="ed:noop"
+        )
+        assert bare_cb.message is None, "ожидался callback без сообщения"
+        assert await screens.ask(bare_cb, "вопрос") is False
+        notes.append("ask() с message=None вернул False")
+
+        # 3b. callback С сообщением: сообщение должно уйти.
+        #     Message — замороженная модель pydantic, поэтому подменяем
+        #     метод у класса, а не присваиваем полю экземпляра.
+        from unittest.mock import patch
+
+        real = Message(message_id=1, date=datetime.now(timezone.utc), chat=chat)
+        sent: list[str] = []
+
+        async def fake_answer(self, text, **kwargs):
+            sent.append(text)
+            return self
+
+        ok_cb = CallbackQuery(
+            id="q2", from_user=tg_user, chat_instance="x", message=real,
+            data="ed:noop",
+        )
+        with patch.object(Message, "answer", fake_answer):
+            assert await screens.ask(ok_cb, "вопрос") is True
+        assert sent == ["вопрос"], sent
+        notes.append("ask() с сообщением отправил текст")
+
+        # 3c. Заглушка пользователя для экрана настроек.
+        from bot.handlers.menus import _anonymous_user
+
+        stub = _anonymous_user(555)
+        assert stub.id == 555 and stub.is_premium is False
+        assert stub.display_name == "Пользователь", stub.display_name
+        notes.append("заглушка пользователя корректна")
+
+        return notes
+
+    notes = asyncio.run(run())
+    return "; ".join(notes)
+
+
 def main() -> int:
     _emit("=" * 62)
     _emit("  САМОПРОВЕРКА: Telegram Chat Constructor Bot")
@@ -2064,6 +2204,7 @@ def main() -> int:
     check_callback_routing()
     check_time_flow_regression()
     check_user_journey()
+    check_none_safety()
 
     passed = sum(1 for good, _, _ in RESULTS if good)
     failed = len(RESULTS) - passed

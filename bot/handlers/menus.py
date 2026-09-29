@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bot.middleware import get_services, get_db_user, get_context
+from bot.middleware import get_services, get_db_user, get_context, is_premium
 import logging
 
 from aiogram import F, Router
@@ -14,6 +14,7 @@ from bot.config import settings as app_settings
 from bot.keyboards import common as KB
 from bot.keyboards import menus as MK
 from bot.keyboards import texts as T
+from bot.models.user import User
 from bot.states import Flow
 from bot.utils import callbacks as C
 from bot.utils import text_utils as TX
@@ -23,17 +24,39 @@ logger = logging.getLogger(__name__)
 router = Router(name="menus")
 
 
+def _anonymous_user(user_id: int) -> User:
+    """Несохранённый пользователь для экранов, когда БД была недоступна.
+
+    Объект не добавляется в сессию: он нужен только чтобы отрисовать
+    экран настроек, когда регистрация в БД провалилась.
+    """
+    return User(
+        id=user_id,
+        first_name="Пользователь",
+        username=None,
+        is_premium=False,
+        is_banned=False,
+        is_admin=False,
+    )
+
+
 async def open_settings(target, state: FSMContext) -> None:
     """Экран настроек бота."""
+    user_id = target.from_user.id
     limits = get_services()["limits"]
     user = get_db_user()
-    db_user = get_services()["user"]
     from bot.services.ai_service import ai_service
 
-    user_id = target.from_user.id
-    image_check = await limits.check_image(user_id, bool(user.is_premium))
-    ai_check = await limits.check_ai(user_id, bool(user.is_premium))
-    _ = db_user
+    # user бывает None, если БД была занята при регистрации: middleware
+    # откатил сессию и положил None. Раньше здесь стояло user.is_premium —
+    # экран настроек падал с AttributeError. Берём флаг безопасно, а сам
+    # user подставляем заглушкой, чтобы T.settings_screen получил объект.
+    premium = is_premium()
+    if user is None:
+        user = _anonymous_user(user_id)
+
+    image_check = await limits.check_image(user_id, premium)
+    ai_check = await limits.check_ai(user_id, premium)
 
     text = T.settings_screen(
         user,
@@ -158,13 +181,13 @@ async def on_ai_entry(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.set_state(Flow.ai_prompt)
-    await callback.message.answer(
-        f"✨ <b>Создание сценария</b>\n\n{T.field_prompt('ai_prompt')}\n\n"
-        "AI придумает <i>вымышленный</i> диалог для юмора, мемов или контента.\n\n"
-        f"{T.INPUT_CANCEL_HINT}",
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=KB.input_menu("Опишите сценарий…"),
-    )
+    await screens.ask(
+            callback,
+f"✨ <b>Создание сценария</b>\n\n{T.field_prompt('ai_prompt')}\n\n"
+            "AI придумает <i>вымышленный</i> диалог для юмора, мемов или контента.\n\n"
+            f"{T.INPUT_CANCEL_HINT}",
+            reply_markup=KB.input_menu("Опишите сценарий…")
+        )
 
 
 @router.message(F.text == KB.BTN_SETTINGS)

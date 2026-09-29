@@ -240,9 +240,9 @@ async def _start_add(
         # Сначала спрашиваем отправителя
         await state.set_state(Flow.add_author)
         await state.update_data(**data, message_index=-1, field="author")
-        await callback.message.answer(
-            "👤 <b>Кто отправляет?</b>\n\nВыберите участника:",
-            parse_mode=screens.PARSE_MODE,
+        await screens.ask(
+            callback,
+"👤 <b>Кто отправляет?</b>\n\nВыберите участника:",
             reply_markup=EK.author_menu(chat_id, T.author_labels(config), "new", -1),
         )
         return
@@ -258,11 +258,11 @@ async def _start_add(
         prompt = T.field_prompt("date")
     elif kind == "forward":
         prompt = T.field_prompt("forward")
-    await callback.message.answer(
-        f"{prompt}\n\n{T.INPUT_CANCEL_HINT}",
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=KB.input_menu("Введите текст…"),
-    )
+    await screens.ask(
+            callback,
+f"{prompt}\n\n{T.INPUT_CANCEL_HINT}",
+            reply_markup=KB.input_menu("Введите текст…"),
+        )
 
 
 #: Действия, у которых есть ОТДЕЛЬНЫЙ хендлер ниже по файлу.
@@ -394,11 +394,11 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "edit":
         await state.set_state(Flow.add_text)
         await state.update_data(chat_id=chat_id, message_index=index, field="text")
-        await callback.message.answer(
-            f"✏️ <b>Сообщение {index + 1}</b>\n\n"
+        await screens.ask(
+            callback,
+f"✏️ <b>Сообщение {index + 1}</b>\n\n"
             f"Текущий текст: <code>{TX.esc(message.preview(200) or '—')}</code>\n\n"
             f"{T.field_prompt('text')}\n\n{T.INPUT_CANCEL_HINT}",
-            parse_mode=screens.PARSE_MODE,
             reply_markup=KB.input_menu("Введите новый текст…"),
         )
         return
@@ -406,10 +406,10 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "time":
         await state.set_state(Flow.add_time)
         await state.update_data(chat_id=chat_id, message_index=index, field="time")
-        await callback.message.answer(
-            "🕐 <b>Время сообщения?</b>\n\n"
+        await screens.ask(
+            callback,
+"🕐 <b>Время сообщения?</b>\n\n"
             "Текущее или вручную в формате <code>12:41</code>.",
-            parse_mode=screens.PARSE_MODE,
             reply_markup=EK.time_menu(chat_id, index),
         )
         return
@@ -431,9 +431,9 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "author":
         await state.set_state(Flow.add_author)
         await state.update_data(chat_id=chat_id, message_index=index, field="author")
-        await callback.message.answer(
-            "👤 <b>Кто отправляет это сообщение?</b>",
-            parse_mode=screens.PARSE_MODE,
+        await screens.ask(
+            callback,
+"👤 <b>Кто отправляет это сообщение?</b>",
             reply_markup=EK.author_menu(chat_id, T.author_labels(config), "change", index),
         )
         return
@@ -487,9 +487,9 @@ async def on_editor(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "photo":
         await state.set_state(Flow.media)
         await state.update_data(chat_id=chat_id, message_index=index)
-        await callback.message.answer(
-            "📷 <b>Пришлите фотографию</b>\n\nОна станет вложением к сообщению.",
-            parse_mode=screens.PARSE_MODE,
+        await screens.ask(
+            callback,
+"📷 <b>Пришлите фотографию</b>\n\nОна станет вложением к сообщению.",
             reply_markup=KB.input_menu("Отправьте фото…"),
         )
         return
@@ -544,11 +544,11 @@ async def on_pick_author(callback: CallbackQuery, state: FSMContext) -> None:
         "date": T.field_prompt("date"),
         "forward": T.field_prompt("forward"),
     }.get(kind, T.field_prompt("text"))
-    await callback.message.answer(
-        f"{prompt}\n\n{T.INPUT_CANCEL_HINT}",
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=KB.input_menu("Введите текст…"),
-    )
+    await screens.ask(
+            callback,
+f"{prompt}\n\n{T.INPUT_CANCEL_HINT}",
+            reply_markup=KB.input_menu("Введите текст…"),
+        )
 
 
 async def _resolve_chat(callback: CallbackQuery, state: FSMContext):
@@ -614,12 +614,12 @@ async def on_manual_time(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.set_state(Flow.manual_time)
     await state.update_data(chat_id=chat_id, message_index=index, field="time")
-    await callback.message.answer(
-        "⌨️ <b>Введите время</b>\n\nФормат: <code>12:41</code>, <code>23:07</code>, "
-        "<code>09:15</code>",
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=KB.input_menu("Например: 12:41"),
-    )
+    await screens.ask(
+            callback,
+"⌨️ <b>Введите время</b>\n\nФормат: <code>12:41</code>, <code>23:07</code>, "
+            "<code>09:15</code>",
+            reply_markup=KB.input_menu("Например: 12:41"),
+        )
 
 
 @router.message(Flow.manual_time, F.text)

@@ -141,11 +141,11 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
 
     if action == "broadcast":
         await state.set_state(Flow.broadcast_text)
-        await callback.message.answer(
-            f"📢 <b>Рассылка</b>\n\n{T.field_prompt('broadcast')}\n\n"
+        await screens.ask(
+            callback,
+f"📢 <b>Рассылка</b>\n\n{T.field_prompt('broadcast')}\n\n"
             "Рассылка начнётся только после подтверждения.",
-            parse_mode=screens.PARSE_MODE,
-            reply_markup=KB.input_menu("Введите текст рассылки…"),
+            reply_markup=KB.input_menu("Введите текст рассылки…")
         )
         return
 
@@ -175,11 +175,11 @@ async def on_admin(callback: CallbackQuery, state: FSMContext) -> None:
         key = C.arg(callback.data, 0)
         await state.set_state(Flow.admin_limit)
         await state.update_data(limit_key=key)
-        await callback.message.answer(
-            f"✏️ <b>Новое значение</b>\n\nПараметр: <code>{TX.esc(key)}</code>\n\n"
+        await screens.ask(
+            callback,
+f"✏️ <b>Новое значение</b>\n\nПараметр: <code>{TX.esc(key)}</code>\n\n"
             "Введите целое число (0 — без лимита).",
-            parse_mode=screens.PARSE_MODE,
-            reply_markup=KB.input_menu("Например: 30"),
+            reply_markup=KB.input_menu("Например: 30")
         )
         return
 

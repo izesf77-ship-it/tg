@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bot.middleware import get_services, get_db_user
+from bot.middleware import get_services, is_premium
 import logging
 
 from aiogram import F, Router
@@ -37,14 +37,17 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     limits = get_services()["limits"]
     users = get_services()["user"]
     chats = get_services()["chats"]
-    user = get_db_user()
+    # user может быть None, если БД была занята при регистрации (тогда
+    # middleware откатил сессию). Раньше здесь стояло user.is_premium —
+    # и вместо ответа на лимит пользователь получал AttributeError.
+    premium = is_premium()
 
     if not ai_service.enabled:
         await message.answer(T.HELP_AI_DISABLED, parse_mode=screens.PARSE_MODE)
         await state.clear()
         return
 
-    check = await limits.check_ai(message.from_user.id, bool(user.is_premium))
+    check = await limits.check_ai(message.from_user.id, premium)
     if not check:
         await message.answer(check.text or "Лимит AI-запросов исчерпан.")
         return

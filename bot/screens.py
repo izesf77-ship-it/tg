@@ -182,6 +182,43 @@ async def notify(target: Message | CallbackQuery, text: str) -> None:
             logger.debug("Не удалось отправить уведомление: %s", exc)
 
 
+async def ask(
+    target: Message | CallbackQuery,
+    text: str,
+    keyboard: Optional[InlineKeyboardMarkup] = None,
+    reply_markup: Optional[ReplyKeyboardMarkup] = None,
+) -> bool:
+    """Отправить вопрос с клавиатурой ввода (безопасная замена ``X.answer``).
+
+    Нужен потому, что у ``CallbackQuery`` поле ``message`` бывает ``None``
+    (например, у сообщения-подсказки в поле ввода). Раньше хендлеры писали
+    ``await callback.message.answer(...)`` напрямую, и при ``None`` падало
+    AttributeError — пользователь вместо вопроса получал «Внутреннюю ошибку».
+
+    Возвращает ``True``, если сообщение отправлено, и ``False`` — если
+    отправлять было некуда.
+    """
+    if isinstance(target, CallbackQuery):
+        message = target.message
+    else:
+        message = target
+    if message is None:
+        logger.debug("Некуда отправить вопрос: у события нет сообщения")
+        return False
+    try:
+        await message.answer(
+            text,
+            parse_mode=PARSE_MODE,
+            reply_markup=reply_markup or keyboard,
+        )
+        return True
+    except TelegramBadRequest as exc:
+        logger.warning("Telegram отклонил сообщение: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Не удалось отправить вопрос")
+    return False
+
+
 __all__ = [
     "PARSE_MODE",
     "show",
@@ -190,5 +227,6 @@ __all__ = [
     "send_photo",
     "safe_answer",
     "notify",
+    "ask",
     "BotError",
 ]
