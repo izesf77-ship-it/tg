@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
+    Chat,
     InlineKeyboardMarkup,
     InputFile,
     Message,
@@ -182,6 +183,24 @@ async def notify(target: Message | CallbackQuery, text: str) -> None:
             logger.debug("Не удалось отправить уведомление: %s", exc)
 
 
+def message_of(target: Message | CallbackQuery) -> Optional[Message]:
+    """Сообщение, к которому относится событие (у CallbackQuery — ``.message``).
+
+    У ``CallbackQuery`` поля ``.chat`` не существует вовсе, а ``.message``
+    бывает ``None`` (у сообщений-подсказок в поле ввода). Раньше хендлеры
+    писали ``target.chat`` напрямую — и падали с AttributeError.
+    """
+    if isinstance(target, CallbackQuery):
+        return target.message
+    return target
+
+
+def chat_of(target: Message | CallbackQuery) -> Optional[Chat]:
+    """Чат, в котором нужно отправить ответ (у CallbackQuery — ``message.chat``)."""
+    message = message_of(target)
+    return message.chat if message is not None else None
+
+
 async def ask(
     target: Message | CallbackQuery,
     text: str,
@@ -190,18 +209,10 @@ async def ask(
 ) -> bool:
     """Отправить вопрос с клавиатурой ввода (безопасная замена ``X.answer``).
 
-    Нужен потому, что у ``CallbackQuery`` поле ``message`` бывает ``None``
-    (например, у сообщения-подсказки в поле ввода). Раньше хендлеры писали
-    ``await callback.message.answer(...)`` напрямую, и при ``None`` падало
-    AttributeError — пользователь вместо вопроса получал «Внутреннюю ошибку».
-
     Возвращает ``True``, если сообщение отправлено, и ``False`` — если
     отправлять было некуда.
     """
-    if isinstance(target, CallbackQuery):
-        message = target.message
-    else:
-        message = target
+    message = message_of(target)
     if message is None:
         logger.debug("Некуда отправить вопрос: у события нет сообщения")
         return False
@@ -228,5 +239,7 @@ __all__ = [
     "safe_answer",
     "notify",
     "ask",
+    "message_of",
+    "chat_of",
     "BotError",
 ]

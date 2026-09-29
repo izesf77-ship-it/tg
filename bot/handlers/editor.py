@@ -64,12 +64,16 @@ async def show_editor(
     if edit:
         await screens.show(target, text, keyboard)
     else:
-        await screens.new(
-            target.bot if isinstance(target, Message) else target.message.bot,
-            target.chat.id if isinstance(target, Message) else target.message.chat.id,
-            text,
-            keyboard,
+        # Раньше здесь стояло ``target.message.bot`` / ``target.chat.id`` —
+        # у CallbackQuery поля .chat нет, и ветка падала бы при None.
+        chat = screens.chat_of(target)
+        bot = target.bot if isinstance(target, Message) else (
+            target.message.bot if target.message else None
         )
+        if chat is not None and bot is not None:
+            await screens.new(bot, chat.id, text, keyboard)
+        else:
+            await screens.show(target, text, keyboard)
     await state.update_data(page=page)
 
 
@@ -885,8 +889,9 @@ async def _send_render(
     await users.count_image(user_id)
     await chats.count_render(chat_id)
     await _edit_status(target, status, "")
+    # target.chat раньше падал: у CallbackQuery поля .chat не существует.
     await screens.send_photo(
-        target.chat, photo, caption, keyboard
+        screens.chat_of(target), photo, caption, keyboard
     )
     return True
 

@@ -2145,6 +2145,18 @@ def check_none_safety() -> str:
         assert stub.display_name == "Пользователь", stub.display_name
         notes.append("заглушка пользователя корректна")
 
+        # 3d. Регрессия из логов: on_done -> _send_render -> target.chat
+        #     У CallbackQuery поля .chat НЕТ, а у Message — есть.
+        assert not hasattr(ok_cb, "chat"), "у CallbackQuery не должно быть .chat"
+        assert screens.chat_of(ok_cb) is chat, "chat_of(callback) не нашёл чат"
+        assert screens.message_of(ok_cb) is real
+        notes.append("chat_of() работает для CallbackQuery")
+
+        # 3e. У callback без сообщения chat_of возвращает None, а не падает.
+        assert screens.chat_of(bare_cb) is None
+        assert screens.message_of(bare_cb) is None
+        notes.append("chat_of() с message=None вернул None")
+
         return notes
 
     notes = asyncio.run(run())
