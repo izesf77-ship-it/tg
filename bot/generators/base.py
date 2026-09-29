@@ -105,6 +105,8 @@ class BaseRenderer:
             if y + lay.height > total:
                 break
             y = self.paint_message(img, draw, lay, config, y)
+        self.paint_scroll_button(img)
+        self.paint_input_bar(img)
         self._paint_watermark(img, config, total)
         return img.convert("RGB")
 
@@ -143,9 +145,109 @@ class BaseRenderer:
 
     def _bottom_padding(self, config: ChatConfig) -> int:
         base = int(self.t.font_meta * 4.2)
+        if self.t.show_input_bar:
+            base += self.t.input_bar_height
         if config.disclaimer:
             base += int(self.t.font_meta * 3.4)
         return base
+
+    def paint_input_bar(self, img: Image.Image) -> None:
+        """Нижняя панель ввода: скруглённое поле, скрепка и микрофон.
+
+        На референсе это «плавающая» панель с отступами, а в её правой
+        части — круглая синяя кнопка микрофона.
+        """
+        h = self.t.input_bar_height
+        if h <= 0 or img.height < h + self.t.side_margin:
+            return
+        draw = ImageDraw.Draw(img, "RGBA")
+        m = self.t.side_margin
+        top = img.height - h + int(m * 0.5)
+        box = (m, top, img.width - m, top + h - m)
+
+        D.drop_shadow(img, box, int(h * 0.42), (0, 0, 0, 26), offset=2, blur=12)
+        draw.rounded_rectangle(
+            list(box), radius=int(h * 0.42), fill=self.t.input_bg + (255,)
+        )
+
+        cy = top + (h - m) // 2
+        icon = self.t.input_icon + (255,)
+        # Скрепка слева
+        ix = m + int(h * 0.30)
+        r = int(h * 0.15)
+        lw = max(3, r // 4)
+        draw.line(
+            [(ix, cy - r * 0.6), (ix, cy + r * 0.8)],
+            fill=icon, width=lw, joint="curve",
+        )
+        draw.arc(
+            [ix - r * 0.9, cy - r * 1.1, ix + r * 0.9, cy + r * 0.5],
+            start=270, end=90, fill=icon, width=lw,
+        )
+        # Плейсхолдер
+        text_x = ix + r * 1.6
+        self.fm.draw_text(
+            draw, (text_x, cy - self.t.font_meta // 2 - 2), "Message",
+            self.t.font_meta, self.t.input_fg + (255,),
+        )
+        # Синяя круглая кнопка микрофона справа
+        mr = int(h * 0.26)
+        mx = img.width - m - mr - int(h * 0.14)
+        draw.ellipse(
+            [mx - mr, cy - mr, mx + mr, cy + mr], fill=self.t.mic_bg + (255,)
+        )
+        self._draw_mic_glyph(draw, mx, cy, int(mr * 0.92))
+
+    @staticmethod
+    def _draw_mic_glyph(draw, cx: int, cy: int, size: int) -> None:
+        """Белый значок микрофона внутри синей кнопки.
+
+        Раньше здесь рисовались контурный прямоугольник и дуга, и вместе
+        они читались как «смайлик». Теперь это настоящий микрофон:
+        капсула-головка, «держатель»-дуга под ней и ножка.
+        """
+        white = (255, 255, 255, 255)
+        lw = max(3, size // 7)
+        head_w = max(3, int(size * 0.30))
+        head_h = max(5, int(size * 0.52))
+        head_top = cy - int(size * 0.44)
+        # головка — вертикальная капсула
+        draw.rounded_rectangle(
+            [cx - head_w, head_top, cx + head_w, head_top + head_h * 2],
+            radius=head_w, fill=white,
+        )
+        # держатель — дуга снизу
+        draw.arc(
+            [cx - int(size * 0.46), cy - int(size * 0.20),
+             cx + int(size * 0.46), cy + int(size * 0.36)],
+            start=0, end=180, fill=white, width=lw,
+        )
+        # ножка
+        draw.line(
+            [(cx, cy + int(size * 0.36)), (cx, cy + int(size * 0.62))],
+            fill=white, width=lw,
+        )
+
+    def paint_scroll_button(self, img: Image.Image) -> None:
+        """Круглая кнопка «вниз» над полем ввода (как на референсе)."""
+        if not self.t.show_scroll_button or not self.t.show_input_bar:
+            return
+        r = int(self.t.input_bar_height * 0.24)
+        cy = img.height - self.t.input_bar_height - int(r * 1.5)
+        cx = img.width - self.t.side_margin - r - int(self.t.input_bar_height * 0.14)
+        D.drop_shadow(
+            img, (cx - r, cy - r, r * 2, r * 2), r, (0, 0, 0, 34), 2, 10
+        )
+        draw = ImageDraw.Draw(img, "RGBA")
+        draw.ellipse(
+            [cx - r, cy - r, cx + r, cy + r], fill=self.t.scroll_bg + (255,)
+        )
+        a = int(r * 0.42)
+        lw = max(3, r // 6)
+        draw.line(
+            [(cx - a, cy - a // 2), (cx, cy + a // 2), (cx + a, cy - a // 2)],
+            fill=self.t.scroll_fg + (255,), width=lw, joint="curve",
+        )
 
     def _create_background(self, height: int) -> Image.Image:
         pattern = None
@@ -167,27 +269,83 @@ class BaseRenderer:
         return img
 
     def draw_pattern(self, img: Image.Image) -> None:
-        """Фоновый узор в стиле мессенджера."""
+        """Фоновый узор в стиле мессенджера.
+
+        Раньше здесь была «сетка точек» из заливных эллипсов — фон
+        выглядел как ровный горошек. Теперь рисуются контурные
+        «каракули» (сердечко, цветок, молния, звезда), как на референсе.
+        """
         draw = ImageDraw.Draw(img, "RGBA")
-        color = D.mix(self.t.bg_top, self.t.pattern_color, 0.85)
-        step = int(self.width / 9)
-        size = max(3, step // 9)
+        color = D.mix(self.t.bg_top, self.t.pattern_color, 0.62) + (44,)
+        # При мелком size все фигуры сливались в кружки, поэтому размер
+        # увеличен, а шаг сетки сокращён — узор читается как рисунок.
+        step = int(self.width / 4.2)
+        size = max(18, step // 7)
+        lw = max(2, size // 12)
         y = step // 2
         row = 0
         while y < img.height:
             x = (row % 2) * (step // 2) + step // 2
             while x < img.width:
-                draw.ellipse(
-                    [x - size, y - size, x + size, y + size], fill=color + (46,)
-                )
+                kind = (row * 3 + int(x / step)) % 4
+                if kind == 0:      # сердечко
+                    self._doodle_heart(draw, x, y, size, color, lw)
+                elif kind == 1:    # цветок: сердцевина и лепестки
+                    r = max(3, int(size * 0.30))
+                    draw.ellipse(
+                        [x - r, y - r, x + r, y + r], outline=color, width=lw
+                    )
+                    for k in range(5):
+                        a = math.pi * 2 * k / 5 - math.pi / 2
+                        px = x + math.cos(a) * r * 2.1
+                        py = y + math.sin(a) * r * 2.1
+                        draw.ellipse(
+                            [px - r, py - r, px + r, py + r],
+                            outline=color, width=lw,
+                        )
+                elif kind == 2:    # «молния»
+                    draw.line(
+                        [
+                            (x + size // 4, y - size),
+                            (x - size // 4, y),
+                            (x + size // 10, y),
+                            (x - size // 5, y + size),
+                        ],
+                        fill=color, width=lw, joint="curve",
+                    )
+                else:              # «звезда»-контур
+                    pts = []
+                    for k in range(10):
+                        rr = size if k % 2 == 0 else size * 0.46
+                        a = math.pi * k / 5 - math.pi / 2
+                        pts.append((x + math.cos(a) * rr, y + math.sin(a) * rr))
+                    draw.line(pts + [pts[0]], fill=color, width=lw, joint="curve")
                 x += step
             y += step
             row += 1
 
+    @staticmethod
+    def _doodle_heart(draw, cx: int, cy: int, size: int, color, lw: int) -> None:
+        """Сердечко-контур из двух дуг и двух наклонных линий."""
+        r = size // 2
+        draw.arc(
+            [cx - size, cy - r, cx, cy + r], start=270, end=360, fill=color, width=lw
+        )
+        draw.arc(
+            [cx, cy - r, cx + size, cy + r], start=180, end=270, fill=color, width=lw
+        )
+        tip = (cx, cy + int(size * 0.9))
+        draw.line([(cx - size, cy), tip], fill=color, width=lw)
+        draw.line([(cx + size, cy), tip], fill=color, width=lw)
+
     # --- Геометрия пузыря -------------------------------------------
     def avatar_reserved(self, side: int) -> int:
-        """Ширина, занятая аватаром слева (только для входящих)."""
-        if side != 0:
+        """Ширина, занятая аватаром слева (только для входящих).
+
+        В стиле Telegram аватаров у сообщений нет (они только в шапке) —
+        поэтому резервируется 0.
+        """
+        if side != 0 or not self.t.avatar_in_messages:
             return 0
         return self.t.avatar_size + self.t.bubble_gap
 
@@ -320,10 +478,15 @@ class BaseRenderer:
         if lines and time_w:
             height += int(time_size * 0.55)
 
+        # В Telegram реакция находится ВНУТРИ пузыря, в его нижнем краю.
+        # Раньше для неё резервировалось место СНАРУЖИ (высота пузыря
+        # уменьшалась на reaction_h, а пилюля рисовалась под ним), из-за
+        # чего реакция висела отдельной плашкой под сообщением.
         reaction_h = 0
         if message.reaction and self.settings.show_reactions:
-            reaction_h = int(self.t.font_meta * 2.0)
+            reaction_h = int(self.t.font_meta * 1.7)
 
+        # Высота пузыря включает место под реакцию внутри.
         lay.height = height + reaction_h
         lay.extra["time_w"] = time_w
         lay.extra["time_size"] = time_size
@@ -418,13 +581,27 @@ class BaseRenderer:
     def _paint_header(self, img: Image.Image, config: ChatConfig) -> None:
         draw = ImageDraw.Draw(img, "RGBA")
         h = self.header_height
-        draw.rectangle([0, 0, self.width - 1, h - 1], fill=self.t.header_bg + (255,))
-        draw.line(
-            [0, h - 1, self.width - 1, h - 1], fill=self.t.header_border + (255,), width=2
-        )
+        m = self.t.header_margin if self.t.float_header else 0
+        if m > 0:
+            # Парящая шапка: скруглённая карточка с отступами, как в
+            # мобильном Telegram (на референсе она не во всю ширину).
+            D.drop_shadow(
+                img, (m, m, self.width - 2 * m, h - 2 * m),
+                self.t.header_radius, (0, 0, 0, 30), offset=2, blur=10,
+            )
+            draw.rounded_rectangle(
+                [m, m, self.width - 1 - m, h - 1 - m],
+                radius=self.t.header_radius, fill=self.t.header_bg + (255,),
+            )
+        else:
+            draw.rectangle([0, 0, self.width - 1, h - 1], fill=self.t.header_bg + (255,))
+            draw.line(
+                [0, h - 1, self.width - 1, h - 1], fill=self.t.header_border + (255,), width=2
+            )
 
+        pad = m if m else 0
         # Кнопка «назад»
-        back_x = int(self.width * 0.045)
+        back_x = int(self.width * 0.045) + pad
         cy = h // 2
         stroke = max(3, h // 26)
         draw.line(
@@ -593,11 +770,14 @@ class BaseRenderer:
 
         w = lay.width
         reaction_h = int(lay.extra.get("reaction_h", 0))
-        body_h = max(1, lay.height - reaction_h)
+        # Пузырь рисуется на ПОЛНУЮ высоту, включая место под реакцию:
+        # раньше здесь вычитался reaction_h, и пилюля реакции оказывалась
+        # под пузырём отдельной плашкой вместо его нижнего края.
+        body_h = lay.height
         x = self._bubble_x(w, is_out)
         color, text_color, meta_color = self._bubble_colors(is_out)
 
-        if not is_out:
+        if not is_out and self.t.avatar_in_messages:
             self._paint_avatar(
                 img,
                 self.t.side_margin + self.t.avatar_size // 2,
@@ -631,8 +811,9 @@ class BaseRenderer:
 
         self._paint_meta(draw, lay, x, y, cursor, line_h, w, pad_x, meta_color, is_out)
 
+        # Реакция — поверх нижнего края пузыря, как в настоящем Telegram.
         if reaction_h and message.reaction:
-            self._paint_reaction(draw, lay, x, y + body_h - 4, w, is_out)
+            self._paint_reaction(draw, lay, x, y + body_h - reaction_h, w, is_out)
         return y + lay.height
 
     def _paint_forward(
@@ -812,7 +993,12 @@ class BaseRenderer:
     def _paint_reaction(
         self, draw, lay: Layout, x: int, y: int, w: int, is_out: bool
     ) -> None:
-        """Пилюля с реакцией под пузырём."""
+        """Пилюля с реакцией в нижнем краю пузыря.
+
+        Раньше ``py`` сдвигался вверх на ``pill_h // 4``, из-за чего пилюля
+        свешивалась ниже пузыря. Теперь она выровнена по нижнему краю
+        пузыря и лежит внутри него, как в настоящем Telegram.
+        """
         reaction = lay.message.reaction
         if reaction is None:
             return
@@ -822,7 +1008,11 @@ class BaseRenderer:
         pill_w = int(self.fm.measure(text, size)) + pad_x * 2
         pill_h = int(size * 1.9)
         px = (x + w - pill_w) if is_out else x
-        py = max(0, y - pill_h // 4)
+        # y передаётся как верх зарезервированной полосы под реакцией.
+        # Раньше здесь вычиталась половина ВСЕЙ высоты пузыря, из-за чего
+        # пилюля уезжала в середину пузыря и перекрывала текст.
+        band = int(lay.extra.get("reaction_h", pill_h))
+        py = max(0, y - (band - pill_h) // 2)
 
         if reaction.mine:
             bg, fg = self.t.reaction_self_bg, self.t.reaction_self_fg

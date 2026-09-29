@@ -89,6 +89,23 @@ class Theme:
     watermark_text: str = "FICTIONAL CHAT"
     watermark_text_ru: str = "ВЫМЫШЛЕННАЯ ПЕРЕПИСКА"
 
+    # Оформление «как в мобильном Telegram»:
+    # парящая шапка с отступами, поле ввода снизу, аватары у сообщений.
+    float_header: bool = False
+    header_margin: int = 0
+    header_radius: int = 0
+    show_input_bar: bool = False
+    input_bar_height: int = 0
+    input_bg: RGB = (255, 255, 255)
+    input_fg: RGB = (140, 148, 158)
+    input_icon: RGB = (110, 118, 128)
+    mic_bg: RGB = (61, 138, 232)
+    show_scroll_button: bool = False
+    scroll_bg: RGB = (255, 255, 255)
+    scroll_fg: RGB = (110, 118, 128)
+    pattern_style: str = "dots"
+    avatar_in_messages: bool = True
+
     @property
     def message_line_height(self) -> int:
         return int(self.font_message * self.line_spacing)
@@ -100,14 +117,16 @@ class Theme:
 
 TELEGRAM_LIGHT = Theme(
     key="telegram", title="Telegram",
-    bg_top=(237, 240, 245), bg_bottom=(228, 233, 240), pattern_color=(214, 221, 230),
-    header_bg=(255, 255, 255), header_fg=(28, 28, 30), header_sub=(122, 130, 140),
-    header_border=(228, 230, 234), header_accent=(61, 138, 232),
-    in_bg=(255, 255, 255), out_bg=(232, 246, 214),
+    # Палитра взята с референса: светло-зелёный фон с узором,
+    # молочно-белые пузыри, зелёные время и галочки.
+    bg_top=(216, 234, 199), bg_bottom=(206, 227, 188), pattern_color=(150, 186, 118),
+    header_bg=(243, 250, 236), header_fg=(28, 32, 26), header_sub=(122, 134, 116),
+    header_border=(196, 216, 178), header_accent=(61, 138, 232),
+    in_bg=(255, 255, 255), out_bg=(223, 246, 205),
     in_text=(24, 26, 30), out_text=(24, 26, 30),
     in_shadow=(0, 0, 0, 16), out_shadow=(0, 0, 0, 12),
-    in_meta=(140, 148, 158), out_meta=(122, 140, 105),
-    in_check=(160, 168, 178), out_check=(140, 158, 122), out_check_read=(61, 138, 232),
+    in_meta=(150, 160, 148), out_meta=(108, 148, 82),
+    in_check=(160, 168, 178), out_check=(126, 168, 96), out_check_read=(126, 168, 96),
     reaction_bg=(245, 246, 248), reaction_fg=(90, 96, 106),
     reaction_self_bg=(224, 238, 255), reaction_self_fg=(45, 110, 190),
     reaction_border=(214, 218, 224),
@@ -115,9 +134,21 @@ TELEGRAM_LIGHT = Theme(
     quote_text_in=(126, 134, 144), quote_text_out=(112, 132, 96),
     quote_name_in=(61, 138, 232), quote_name_out=(96, 150, 62),
     service_bg=(206, 210, 216), service_fg=(72, 78, 86),
-    date_bg=(222, 226, 232), date_fg=(86, 92, 102),
+    # Разделитель дат в Telegram — тёмно-серая плашка, а НЕ зелёная.
+    # Здесь раньше стоял цвет исходящего пузыря (108, 176, 92), из-за чего
+    # плашка сливалась с сообщениями и выглядела как «ярлык».
+    date_bg=(96, 106, 118), date_fg=(255, 255, 255),
     watermark_fg=(148, 156, 168), watermark_bg=(255, 255, 255),
     forward_fg_in=(112, 150, 210), forward_fg_out=(120, 150, 90),
+    # Оформление по референсу: шапка «парит» с отступами, снизу поле
+    # ввода с кнопкой микрофона, у сообщений аватаров нет.
+    float_header=True, header_margin=18, header_radius=44,
+    show_input_bar=True, input_bar_height=132,
+    input_bg=(248, 252, 242), input_fg=(150, 160, 148), input_icon=(122, 134, 116),
+    mic_bg=(61, 138, 232), show_scroll_button=True,
+    scroll_bg=(252, 255, 248), scroll_fg=(122, 134, 116),
+    pattern_style="doodle", avatar_in_messages=False,
+    bubble_radius=28, bubble_tail=22, side_margin=40,
 )
 
 TELEGRAM_DARK = Theme(
