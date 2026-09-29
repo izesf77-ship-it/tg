@@ -947,9 +947,14 @@ class BaseRenderer:
         dur_x = x + w - right_pad - dur_w - (checks + int(size * 0.35) if checks else 0)
         bar_w = max(20, int(dur_x - size * 0.4 - bar_x))
 
+        # Цвет дорожки: у исходящего сообщения — зелёный (как прочитанное),
+        # у входящего — серый. Раньше тут стояло ``out_check_read if is_unread
+        # else in_meta``, из-за чего прочитанное исходящее голосовое
+        # выглядело серым, как будто его никто не слушал.
+        wave_color = self.t.out_check_read if is_out else self.t.in_meta
         D.waveform(
             draw, (bar_x, y + int(h * 0.26), bar_w, int(h * 0.48)),
-            self.t.out_check_read if is_unread else self.t.in_meta,
+            wave_color,
             seed=abs(hash(lay.message.id)) % 17,
         )
         self.fm.draw_text(

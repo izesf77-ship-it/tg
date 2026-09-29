@@ -222,20 +222,26 @@ def waveform(
     seed: int = 0,
     bars: int = 26,
 ) -> None:
-    """Визуализация звуковой дорожки (детерминированная по seed)."""
+    """Звуковая дорожка голосового (детерминированная по seed).
+
+    Раньше полоски были узкими (45% шага) и короткими, из-за чего ряд
+    читался как «гороши», а не как волна. Теперь полоски плотнее,
+    а высоты ограничены снизу, чтобы дорожка не выглядела пунктиром.
+    """
     x, y, w, h = box
     if w <= 0 or h <= 0:
         return
     step = max(3, int(w / bars))
-    bar_w = max(2, int(step * 0.45))
-    total = bars * step
-    start = x + max(0, (w - total) // 2)
+    bar_w = max(3, int(step * 0.62))
+    # Дорожка занимает всю ширину: отступы слева/справа не нужны.
     for i in range(bars):
-        phase = math.sin((i + 1) * 0.9 + seed * 1.7) * 0.5 + 0.5
+        phase = math.sin((i + 1) * 0.62 + seed * 1.7) * 0.5 + 0.5
         noise = ((i * 37 + seed * 13) % 11) / 11.0
-        ratio = 0.25 + 0.75 * (0.65 * phase + 0.35 * noise)
-        bar_h = max(3, int(h * ratio))
-        bx = start + i * step
+        # Разброс высот усилен, иначе полоски выглядят одинаковыми
+        # «пупырышками», а не звуковой волной.
+        ratio = 0.18 + 0.82 * (0.72 * phase + 0.28 * noise) ** 1.25
+        bar_h = max(int(h * 0.26), int(h * min(1.0, ratio)))
+        bx = x + i * step
         by = y + (h - bar_h) // 2
         draw.rounded_rectangle(
             [bx, by, bx + bar_w, by + bar_h], radius=bar_w // 2, fill=color + (255,)
@@ -245,30 +251,62 @@ def waveform(
 def play_button(
     draw: ImageDraw.ImageDraw, center: Tuple[int, int], radius: int, bg: RGB, fg: RGB
 ) -> None:
-    """Кнопка воспроизведения."""
+    """Кнопка воспроизведения — круг с оптически центрированным треугольником.
+
+    Раньше вершины задавались от ``cx`` напрямую, из-за чего треугольник
+    уезжал вправо: его визуальный центр (OPTICAL center) левее
+    геометрического. Теперь треугольник строится по центру и сдвигается
+    на долю радиуса влево, как в настоящем плеере.
+    """
     cx, cy = center
     draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=bg + (255,))
-    tri_h, tri_w = int(radius * 0.9), int(radius * 0.8)
-    draw.polygon(
-        [
-            (cx - tri_w * 0.35, cy - tri_h * 0.5),
-            (cx + tri_w * 0.62, cy),
-            (cx - tri_w * 0.35, cy + tri_h * 0.5),
-        ],
-        fill=fg + (255,),
-    )
+
+    # Равносторонний треугольник со стороной 1.0*radius.
+    side = radius * 1.05
+    hgt = side * math.sqrt(3) / 2
+    left = cx - side / 2
+    tri = [
+        (left, cy - hgt / 2),
+        (left, cy + hgt / 2),
+        (left + side, cy),
+    ]
+    # Компенсация оптического смещения треугольника.
+    shift = radius * 0.13
+    tri = [(px + shift, py) for px, py in tri]
+    draw.polygon(tri, fill=fg + (255,))
 
 
 def file_icon(draw: ImageDraw.ImageDraw, box: Tuple[int, int, int, int], color: RGB) -> None:
-    """Иконка документа со сгибом."""
+    """Иконка файла: скруглённый квадрат с белым документом и сгибом.
+
+    Раньше рисовался просто синий прямоугольник, а «сгиб» — полупрозрачным
+    треугольником поверх него. Из-за этого угол выглядел срезанным, и
+    иконка читалась как обрывок бумаги. Теперь это синяя подложка с
+    белым листом внутри и настоящим сгибом в углу.
+    """
     x, y, w, h = box
-    fold = int(w * 0.38)
-    draw.rounded_rectangle(
-        [x, y, x + w, y + h], radius=max(2, w // 8), fill=color + (255,)
-    )
+    radius = max(3, int(min(w, h) * 0.22))
+    # Синяя подложка-скруглённый квадрат.
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=color + (255,))
+
+    pad = max(2, int(min(w, h) * 0.24))
+    dx0, dy0 = x + pad, y + pad
+    dx1, dy1 = x + w - pad, y + h - pad
+    fold = int(min(dx1 - dx0, dy1 - dy0) * 0.34)
+
+    # Белый лист: верхний правый угол срезан по диагонали.
+    sheet = [
+        (dx0, dy0),
+        (dx1 - fold, dy0),
+        (dx1, dy0 + fold),
+        (dx1, dy1),
+        (dx0, dy1),
+    ]
+    draw.polygon(sheet, fill=(255, 255, 255, 255))
+    # Сгиб: маленький треугольник «отогнутого» угла.
     draw.polygon(
-        [(x + w - fold, y), (x + w, y + fold), (x + w - fold, y + fold)],
-        fill=(255, 255, 255, 120),
+        [(dx1 - fold, dy0), (dx1, dy0 + fold), (dx1 - fold, dy0 + fold)],
+        fill=color + (255,),
     )
 
 
