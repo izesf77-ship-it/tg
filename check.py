@@ -2233,6 +2233,70 @@ def check_none_safety() -> str:
     return "; ".join(notes)
 
 
+def check_module_attrs() -> None:
+    """Ловит вызовы несуществующих атрибутов модулей: ``T.esc(...)``.
+
+    Регрессия: в my_chats.py было ``T.esc(title)``, где ``T`` — это
+    keyboards.texts. Функции esc() там нет (она живёт в utils.text_utils),
+    и удаление переписки падало с AttributeError. Тесты этого не видели,
+    потому что ни один не дёргал обработчик удаления.
+    """
+    import ast
+    import importlib
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent
+    problems: List[str] = []
+    checked = 0
+
+    for path in sorted((root / "bot").rglob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        # Имена модулей, импортированных в этом файле.
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    aliases[a.asname or a.name] = a.name
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                for a in node.names:
+                    if a.name != "*":
+                        aliases[a.asname or a.name] = f"{node.module}.{a.name}"
+
+        for node in ast.walk(tree):
+            # Цепочка вида T.esc(...) / TX.esc(...)
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            owner = func.value
+            if not isinstance(owner, ast.Name) or owner.id not in aliases:
+                continue
+
+            modname = aliases[owner.id]
+            checked += 1
+            try:
+                if modname.startswith("bot."):
+                    module = importlib.import_module(modname)
+                else:
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+
+            if not hasattr(module, func.attr):
+                rel = path.relative_to(root)
+                problems.append(
+                    f"{rel}:{node.lineno} — {owner.id}.{func.attr}() "
+                    f"не существует в {modname}"
+                )
+
+    assert checked >= 10, f"проверено слишком мало вызовов: {checked}"
+    assert not problems, "нетствующие атрибуты модулей:\n  " + "\n  ".join(problems)
+
+
 def main() -> int:
     _emit("=" * 62)
     _emit("  САМОПРОВЕРКА: Telegram Chat Constructor Bot")
@@ -2252,6 +2316,7 @@ def main() -> int:
     check_editor_state_loss()
     check_add_text_after_restart()
     check_backoff()
+    check_module_attrs()
     check_imports()
     check_dispatcher()
     check_keyboards()

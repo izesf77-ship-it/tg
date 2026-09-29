@@ -15,6 +15,7 @@ from bot.keyboards import menus as MK
 from bot.keyboards import texts as T
 from bot.states import Flow
 from bot.utils import callbacks as C
+from bot.utils.text_utils import esc
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
         title = str(chat.title) if chat else f"#{chat_id}"
         await screens.show(
             callback,
-            f"🗑 <b>Удалить переписку?</b>\n\n{T.esc(title)}\nДействие нельзя отменить.",
+            f"🗑 <b>Удалить переписку?</b>\n\n{esc(title)}\nДействие нельзя отменить.",
             MK.confirm_delete_chat(chat_id),
         )
         return
