@@ -281,7 +281,9 @@ async def on_participant_photo(
 ) -> None:
     """Фотография участника, отправленная прямо из Telegram."""
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    from bot.handlers.editor import _state_chat_id
+
+    chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("participant_index", 0))
     chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
@@ -327,7 +329,9 @@ async def _download_photo(bot: Bot, file_id: str, user_id: int) -> Optional[Path
 async def on_participant_text(message: Message, state: FSMContext) -> None:
     """Текстовое поле участника."""
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    from bot.handlers.editor import _state_chat_id
+
+    chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("participant_index", 0))
     field = str(data.get("field", "name"))
     value = TX.clean(message.text or "")

@@ -72,17 +72,85 @@ async def show_editor(
     await state.update_data(page=page)
 
 
+async def _state_chat_id(data: dict, user_id: int) -> int:
+    """ID переписки из состояния FSM.
+
+    Состояние хранится в памяти и теряется при перезапуске бота. Раньше
+    обработчики ввода текста и времени брали ID только оттуда и выдавали
+    «Переписка не найдена». Теперь при потере состояния ID восстанавливается
+    по последнему черновику пользователя из БД.
+    """
+    chat_id = int(data.get("chat_id", -1) or -1)
+    if chat_id >= 0:
+        return chat_id
+    try:
+        draft = await get_services()["chats"].get_draft(user_id)
+    except Exception:  # noqa: BLE001
+        return -1
+    return int(draft.id) if draft is not None else -1
+
+
+def _event_of(target):
+    """Объект события (Message или CallbackQuery) с данными пользователя.
+
+    Раньше здесь стояло ``target if hasattr(target, "data") else target.message``:
+    у Message поля data нет (всегда False), у CallbackQuery оно есть, но это
+    строка callback-данных. Ветка выбиралась неверно, и для сообщений
+    падало AttributeError.
+    """
+    if isinstance(target, CallbackQuery):
+        return target
+    return target
+
+
+async def _resolve_chat_id(target, state: FSMContext, chats) -> int:
+    """Определить ID переписки.
+
+    Порядок: состояние FSM → callback_data → последний черновик в БД.
+    Раньше был только первый вариант, поэтому после перезапуска бота
+    (состояние хранится в памяти) пользователь получал
+    «Переписка не найдена» вместо продолжения работы.
+    """
+    data = await state.get_data()
+    chat_id = int(data.get("chat_id", -1) or -1)
+    if chat_id >= 0:
+        return chat_id
+
+    # Запасной вариант: ID зашит в саму кнопку
+    if isinstance(target, CallbackQuery):
+        chat_id = C.chat_id_of(target.data or "")
+        if chat_id >= 0:
+            return chat_id
+
+    # Последняя незавершённая переписка пользователя
+    draft = await chats.get_draft(target.from_user.id)
+    if draft is not None:
+        return int(draft.id)
+    return -1
+
+
 async def _require_chat(target, state: FSMContext):
-    """Загрузить конфиг текущей переписки из состояния FSM."""
+    """Загрузить конфиг текущей переписки."""
     from bot.utils.errors import ChatNotFoundError
 
-    data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    event = _event_of(target)
+    chats = get_services()["chats"]
+    chat_id = await _resolve_chat_id(target, state, chats)
     if chat_id < 0:
         raise ChatNotFoundError()
-    event = target if hasattr(target, "data") else target.message
-    chats = get_services()["chats"]
-    config = await chats.get_config(event.from_user.id, chat_id)
+
+    try:
+        config = await chats.get_config(event.from_user.id, chat_id)
+    except ChatNotFoundError:
+        # Переписки могло не быть (удалена/сброшена) — берём черновик
+        draft = await chats.get_draft(event.from_user.id)
+        if draft is None:
+            raise
+        chat_id = int(draft.id)
+        config = await chats.get_config(event.from_user.id, chat_id)
+
+    # Сохраняем восстановленный ID в состояние, чтобы больше не терять
+    await state.update_data(chat_id=chat_id)
     return chat_id, config, event.from_user.id
 
 
@@ -96,7 +164,7 @@ async def _save_and_back(
     target, state, config, chat_id, user_id, page: int = 0, header: str = ""
 ) -> None:
     """Сохранить конфиг и вернуться к списку сообщений."""
-    event = target if hasattr(target, "data") else target.message
+    event = _event_of(target)
     await get_services()["chats"].save(user_id, chat_id, config)
     await state.set_state(Flow.editor)
     await show_editor(target, config, chat_id, state, page, header=header)
@@ -465,7 +533,7 @@ async def on_manual_time(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_manual_time_input(message: Message, state: FSMContext) -> None:
     """Обработка введённого времени."""
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("message_index", -1))
     raw = (message.text or "").strip()
 
@@ -551,7 +619,7 @@ def _safe_kind(kind: str) -> MessageKind:
 async def on_add_text(message: Message, state: FSMContext) -> None:
     """Ввод текста нового сообщения или правка существующего."""
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("message_index", -1))
     text = (message.text or "").strip()
 
@@ -612,7 +680,7 @@ async def on_media_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     from bot.schemas import MediaItem
 
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("message_index", -1))
     chats = get_services()["chats"]
     config = await chats.get_config(message.from_user.id, chat_id)
@@ -636,7 +704,7 @@ async def on_media_photo(message: Message, state: FSMContext, bot: Bot) -> None:
 async def on_time_text(message: Message, state: FSMContext) -> None:
     """Ввод имени источника пересылки или времени в состоянии add_time."""
     data = await state.get_data()
-    chat_id = int(data.get("chat_id", -1))
+    chat_id = await _state_chat_id(data, message.from_user.id)
     text = (message.text or "").strip()
     kind = str(data.get("kind", "text"))
 

@@ -940,6 +940,115 @@ def check_limits_persistence() -> str:
     return detail
 
 
+@step("Редактор переживает потерю состояния FSM (перезапуск бота)")
+def check_editor_state_loss() -> str:
+    """Регрессия: обработчики ввода брали chat_id только из состояния FSM.
+
+    Состояние живёт в памяти, поэтому после перезапуска бота (например,
+    после обновления с GitHub) ввод сообщения и времени отвечали
+    «Переписка не найдена». Теперь ID восстанавливается из БД.
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.handlers.editor import _require_chat
+    from bot.middleware import DbSessionMiddleware
+    from bot.schemas import ChatConfig, Participant
+
+    errors: list = []
+    added: list = []
+
+    async def fake_send(event, *args, **kwargs):
+        return event
+
+    async def fake_edit(event, *args, **kwargs):
+        return event
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052880
+        tg_user = User(id=uid, is_bot=False, first_name="Ser")
+        message = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=uid, type="private"), from_user=tg_user, text="Привет",
+        )
+
+        import bot.screens as SC
+
+        SC.send_photo = fake_send
+        SC.edit_text = fake_edit
+        SC.show = fake_edit
+        SC.notify = fake_send
+
+        # Настоящая переписка в БД — её и должен найти бот
+        async with session_scope() as session:
+            config = ChatConfig(title="Тест", style="telegram")
+            config.participants = [
+                Participant(name="Алексей", side=0),
+                Participant(name="Алина", side=1),
+            ]
+            config.ensure_participants()
+            chat = await _repo_create(session, uid, config)
+            chat_id = chat.id
+
+        class _EmptyState:
+            """Состояние после перезапуска: данных нет."""
+
+            def __init__(self):
+                self.stored: dict = {}
+
+            async def get_data(self):
+                return dict(self.stored)
+
+            async def update_data(self, **kw):
+                self.stored.update(kw)
+
+            async def set_state(self, s):
+                return None
+
+            async def clear(self):
+                self.stored = {}
+
+        state = _EmptyState()
+
+        async def handler(event, data):
+            try:
+                # 1) Редактор должен найти переписку без состояния
+                got_id, cfg, uid2 = await _require_chat(event, state)
+                if got_id != chat_id:
+                    added.append(f"неверный chat_id: {got_id} != {chat_id}")
+                if not cfg.participants:
+                    added.append("пустой конфиг")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"require_chat: {type(exc).__name__}: {exc}")
+            return None
+
+        mw = DbSessionMiddleware()
+        await mw(handler, message, {"event_from_user": tg_user})
+
+        # 2) После восстановления ID должен попасть в состояние
+        if state.stored.get("chat_id") != chat_id:
+            added.append(f"ID не сохранён в состояние: {state.stored}")
+
+        return "; ".join(errors + added) if (errors or added) else "ok"
+
+    async def _repo_create(session, user_id: int, config: ChatConfig):
+        from bot.database.repositories import ChatRepository
+
+        return await ChatRepository(session).create(user_id=user_id, config=config)
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail == "ok", f"редактор не восстановился: {detail}"
+    return "chat_id восстановлен из БД после потери состояния"
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1399,6 +1508,7 @@ def main() -> int:
     check_participant_flow()
     check_disclaimer_toggle()
     check_limits_persistence()
+    check_editor_state_loss()
     check_backoff()
     check_imports()
     check_dispatcher()
