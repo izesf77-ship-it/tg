@@ -1049,6 +1049,144 @@ def check_editor_state_loss() -> str:
     return "chat_id восстановлен из БД после потери состояния"
 
 
+@step("Ввод сообщения работает после перезапуска (сценарий пользователя)")
+def check_add_text_after_restart() -> str:
+    """Полный сценарий: пустое состояние → пользователь пишет сообщение.
+
+    Именно это наблюдал пользователь: переписка создана, сообщение введено,
+    но бот отвечал «Переписка не найдена».
+    """
+    import asyncio
+    import datetime
+
+    from aiogram.types import CallbackQuery, Chat, Message as TgMessage, User
+
+    from bot.database.engine import create_all, dispose_engine, session_scope
+    from bot.handlers.editor import on_add_text, on_set_time
+    from bot.middleware import DbSessionMiddleware
+    from bot.schemas import ChatConfig, Participant
+
+    problems: list = []
+
+    async def fake_answer(self, *args, **kwargs):
+        return self
+
+    async def run() -> str:
+        await create_all()
+        uid = 6518052880
+        tg_user = User(id=uid, is_bot=False, first_name="Ser")
+        message = TgMessage(
+            message_id=1, date=datetime.datetime.now(),
+            chat=Chat(id=uid, type="private"), from_user=tg_user,
+            text="Привет, ты где?",
+        )
+
+        import bot.screens as SC
+        import bot.utils.errors as ER
+
+        SC.show = fake_answer
+        SC.notify = fake_answer
+        SC.safe_answer = fake_answer
+        SC.edit_text = fake_answer
+        SC.send_photo = fake_answer
+        TgMessage.answer = fake_answer
+
+        # Настоящая переписка в БД
+        async with session_scope() as session:
+            from bot.database.repositories import ChatRepository
+
+            config = ChatConfig(title="Тест", style="telegram")
+            config.participants = [
+                Participant(name="Алексей", side=0),
+                Participant(name="Алина", side=1),
+            ]
+            config.ensure_participants()
+            chat = await ChatRepository(session).create(user_id=uid, config=config)
+            chat_id = chat.id
+
+        class _LostState:
+            """Состояние после перезапуска: FSM пуст."""
+
+            def __init__(self):
+                self.stored: dict = {}
+
+            async def get_data(self):
+                return dict(self.stored)
+
+            async def update_data(self, **kw):
+                self.stored.update(kw)
+
+            async def set_state(self, s):
+                return None
+
+            async def clear(self):
+                self.stored = {}
+
+        state = _LostState()
+
+        async def handler(event, data):
+            try:
+                await on_add_text(event, state)
+            except ER.ChatNotFoundError as exc:
+                problems.append("ввод текста: " + exc.user_message)
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"ввод текста: {type(exc).__name__}: {exc}")
+            return None
+
+        mw = DbSessionMiddleware()
+        await mw(handler, message, {"event_from_user": tg_user})
+
+        # Шаг 2: пользователь нажимает «Текущее время».
+        # Именно здесь раньше выдавало «Переписка не найдена».
+        async def handler_time(event, data):
+            try:
+                await on_set_time(event, state)
+            except ER.ChatNotFoundError as exc:
+                problems.append("выбор времени: " + exc.user_message)
+            except Exception as exc:  # noqa: BLE001
+                problems.append(f"выбор времени: {type(exc).__name__}: {exc}")
+            return None
+
+        from bot.utils import callbacks as CB
+
+        callback = CallbackQuery(
+            id="1", from_user=tg_user, chat_instance="x", message=message,
+            data=CB.cb(CB.S_EDIT, "time", -1, chat_id),
+        )
+
+        class _SafeAnswer:
+            async def __call__(self, event, text=None, **kwargs):
+                if text:
+                    problems.append(f"отказ: {text}")
+                return None
+
+        SC.safe_answer = _SafeAnswer()
+
+        await mw(handler_time, callback, {"event_from_user": tg_user})
+
+        # Проверяем, что сообщение реально сохранилось в БД
+        async with session_scope() as session:
+            from bot.services.chat_service import ChatService
+
+            saved = await ChatService(session).get_config(uid, chat_id)
+            texts = [m.text for m in saved.messages]
+
+        if not texts:
+            problems.append("сообщение не добавилось в переписку")
+        elif texts[0] != "Привет, ты где?":
+            problems.append(f"текст неверный: {texts[0]!r}")
+
+        return "; ".join(problems) if problems else f"сообщений: {len(texts)}"
+
+    try:
+        detail = asyncio.run(run())
+    finally:
+        asyncio.run(dispose_engine())
+
+    assert detail.startswith("сообщений"), f"ввод текста сломан: {detail}"
+    return f"текст добавлен без состояния FSM ({detail})"
+
+
 @step("Рост паузы между попытками (backoff)")
 def check_backoff() -> str:
     """Пауза должна расти до 60 с, а не застревать на 32 с.
@@ -1890,6 +2028,7 @@ def main() -> int:
     check_disclaimer_toggle()
     check_limits_persistence()
     check_editor_state_loss()
+    check_add_text_after_restart()
     check_backoff()
     check_imports()
     check_dispatcher()
