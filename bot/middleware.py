@@ -94,6 +94,17 @@ class DbSessionMiddleware(BaseMiddleware):
         if tg_user is None and isinstance(event, (Message, CallbackQuery)):
             tg_user = event.from_user
 
+        # Бот и чат события: нужны, чтобы отправить изображение даже из
+        # callback'а без сообщения (у него нет .message.bot/.message.chat).
+        from bot import screens as _screens
+
+        _event_bot = data.get("bot")
+        _event_chat = getattr(event, "chat", None)
+        if isinstance(event, CallbackQuery) and event.message is not None:
+            _event_bot = _event_bot or event.message.bot
+            _event_chat = _event_chat or event.message.chat
+        _screens.bind_event_context(_event_bot, getattr(_event_chat, "id", None))
+
         if tg_user is None:
             return await handler(event, data)
 

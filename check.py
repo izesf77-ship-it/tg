@@ -2099,7 +2099,10 @@ def check_none_safety() -> str:
     # --- 3. Поведение: screens.ask переживает message=None ----------------
     async def run() -> list[str]:
         from datetime import datetime, timezone
+        from unittest.mock import patch
 
+        from aiogram import Bot
+        from aiogram.client.session.base import BaseSession
         from aiogram.types import CallbackQuery, Chat, Message, User as TgUser
 
         from bot import screens
@@ -2156,6 +2159,73 @@ def check_none_safety() -> str:
         assert screens.chat_of(bare_cb) is None
         assert screens.message_of(bare_cb) is None
         notes.append("chat_of() с message=None вернул None")
+
+        # 3f. Регрессия из логов: 'Chat' object has no attribute 'send_photo'
+        #     В aiogram 3.31 метода send_photo нет ни у Chat, ни у Message
+        #     (есть answer_photo/reply_photo). Отправлять надо через Bot.
+        assert hasattr(real, "answer_photo"), "у Message есть answer_photo"
+        assert not hasattr(real, "send_photo"), "у Message НЕТ send_photo"
+
+        sent_photos: list[int] = []
+
+        class FakeSession(BaseSession):
+            async def close(self) -> None:
+                return None
+
+            async def make_request(self, bot, method, timeout=None):
+                sent_photos.append(int(method.chat_id))
+                return real
+
+            async def stream_content(self, *args, **kwargs):
+                yield b""
+
+        real_bot = Bot(token="42:TEST", session=FakeSession())
+
+        # BaseSession.__call__ оборачивает make_request и проверяет ответ
+        # через check_response; подменяем его целиком.
+        async def fake_call(self, bot, method, timeout=None):
+            sent_photos.append(int(method.chat_id))
+            return real
+
+        real_bot.session.__class__.__call__ = fake_call  # type: ignore[method-assign]
+        # Message НЕ хранит ссылку на бота — поле bot заполняется
+        # контекстом aiogram. Поэтому берём бота из bind_event_context,
+        # который вызывает middleware (именно так работает и в боте).
+        real_msg = Message(
+            message_id=1, date=datetime.now(timezone.utc), chat=chat
+        )
+        screens.bind_event_context(real_bot, chat.id)
+        cb_with = CallbackQuery(
+            id="q3", from_user=tg_user, chat_instance="x", message=real_msg,
+            data="ed:noop",
+        )
+        # Настоящий PNG: InputFile проверяет содержимое и ругается на мусор.
+        import io
+
+        import PIL.Image
+
+        buf = io.BytesIO()
+        PIL.Image.new("RGB", (8, 8), "white").save(buf, format="PNG")
+        png = buf.getvalue()
+
+        assert await screens.send_photo(cb_with, png, "подпись") is real, "cb не отправил"
+        assert sent_photos == [555], sent_photos
+        notes.append("send_photo(callback) ушёл через Bot")
+
+        # 3g. Message тоже работает.
+        assert await screens.send_photo(real_msg, png, "подпись") is real, "msg не отправил"
+
+        # 3h. CallbackQuery БЕЗ сообщения, но с ботом в контексте —
+        #     отправка всё равно должна пройти (это отдельный сценарий).
+        assert await screens.send_photo(bare_cb, png, "подпись") is real, "bare-cb с контекстом"
+        assert sent_photos == [555, 555, 555], sent_photos
+
+        # 3i. Без контекста и без сообщения — не отправляем, но и не падаем.
+        screens.bind_event_context(None, None)
+        assert await screens.send_photo(chat, png, "подпись") is None, "Chat без контекста"
+        assert await screens.send_photo(None, png, "подпись") is None, "None -> None"
+        assert await screens.send_photo(bare_cb, png, "подпись") is None, "bare-cb без контекста"
+        notes.append("send_photo() пережил все варианты")
 
         return notes
 

@@ -889,10 +889,10 @@ async def _send_render(
     await users.count_image(user_id)
     await chats.count_render(chat_id)
     await _edit_status(target, status, "")
-    # target.chat раньше падал: у CallbackQuery поля .chat не существует.
-    await screens.send_photo(
-        screens.chat_of(target), photo, caption, keyboard
-    )
+    # Передаём Message (или сам CallbackQuery), а не .chat: у Chat нет
+    # метода send_photo — было AttributeError: 'Chat' object has no
+    # attribute 'send_photo'.
+    await screens.send_photo(target, photo, caption, keyboard)
     return True
 
 
