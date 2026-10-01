@@ -22,7 +22,14 @@ logger = logging.getLogger(__name__)
 router = Router(name="start")
 
 # Тексты кнопок главного меню (ReplyKeyboard)
-MENU_TEXTS = {KB.BTN_CREATE, KB.BTN_MY, KB.BTN_HELP, KB.BTN_SETTINGS, KB.BTN_CANCEL}
+MENU_TEXTS = {
+    KB.BTN_CREATE,
+    KB.BTN_AI,
+    KB.BTN_MY,
+    KB.BTN_HELP,
+    KB.BTN_SETTINGS,
+    KB.BTN_CANCEL,
+}
 
 
 @router.message(CommandStart(deep_link=False))
@@ -50,7 +57,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
     else:
         await message.answer(
-            "Нажмите <b>➕ Создать переписку</b>, чтобы начать.",
+            "Нажмите <b>➕ Создать переписку</b> или <b>✨ Создать с AI</b>, "
+            "чтобы начать.",
             parse_mode=screens.PARSE_MODE,
         )
 
@@ -108,6 +116,14 @@ async def btn_create(message: Message, state: FSMContext) -> None:
     from bot.handlers.create import open_creation
 
     await open_creation(message, state)
+
+
+@router.message(F.text == KB.BTN_AI)
+async def btn_ai(message: Message, state: FSMContext) -> None:
+    """Кнопка AI-сценария из главного меню."""
+    from bot.handlers.menus import open_ai_entry
+
+    await open_ai_entry(message, state)
 
 
 @router.message(F.text == KB.BTN_MY)

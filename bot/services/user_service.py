@@ -22,8 +22,7 @@ class UserService:
 
     async def register(self, tg_user: TgUser) -> User:
         """Найти или создать пользователя при первом обращении."""
-        is_new = await self.repo.get(tg_user.id) is None
-        user = await self.repo.get_or_create(
+        user, is_new = await self.repo.get_or_create(
             user_id=tg_user.id,
             username=tg_user.username,
             first_name=tg_user.first_name,

@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.utils import callbacks as C
 
 BTN_CREATE = "➕ Создать переписку"
+BTN_AI = "✨ Создать с AI"
 BTN_MY = "📂 Мои переписки"
 BTN_HELP = "📖 Как это работает"
 BTN_SETTINGS = "⚙️ Настройки"
@@ -33,6 +34,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_CREATE)],
+            [KeyboardButton(text=BTN_AI)],
             [KeyboardButton(text=BTN_MY), KeyboardButton(text=BTN_HELP)],
             [KeyboardButton(text=BTN_SETTINGS)],
         ],
@@ -46,6 +48,9 @@ def main_menu_inline() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text=BTN_CREATE, callback_data=C.cb(C.S_MENU, "create")),
+        InlineKeyboardButton(text=BTN_AI, callback_data=C.cb(C.S_AI, "ask")),
+    )
+    kb.row(
         InlineKeyboardButton(text=BTN_MY, callback_data=C.cb(C.S_MENU, "my")),
     )
     kb.row(
@@ -101,6 +106,7 @@ __all__ = [
     "hide_keyboard",
     "MAIN_MENU_TEXT",
     "BTN_CREATE",
+    "BTN_AI",
     "BTN_MY",
     "BTN_HELP",
     "BTN_SETTINGS",

@@ -34,6 +34,12 @@ def style_menu(premium: bool = False) -> InlineKeyboardMarkup:
                 callback_data=C.cb(C.S_STYLE, "pick", style.key),
             )
         )
+    kb.row(
+        InlineKeyboardButton(
+            text="✨ Создать сценарий с AI",
+            callback_data=C.cb(C.S_AI, "ask"),
+        )
+    )
     return with_back(kb, BACK_CREATE).as_markup()
 
 

@@ -187,25 +187,44 @@ async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith(C.S_AI + ":"))
 async def on_ai_entry(callback: CallbackQuery, state: FSMContext) -> None:
     """Вход в AI-генерацию сценария."""
+    await open_ai_entry(callback, state, C.action(callback.data))
+
+
+async def open_ai_entry(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    action: str = "ask",
+) -> None:
+    """Открыть AI-ввод из callback или кнопки главного меню."""
     from bot.services.ai_service import ai_service
 
-    action = C.action(callback.data)
-    if action == "why":
-        await screens.show(callback, T.HELP_AI_DISABLED, MK.ai_menu(False))
+    if action == "why" or not ai_service.enabled:
+        await state.clear()
+        if isinstance(target, CallbackQuery):
+            await screens.show(target, T.HELP_AI_DISABLED, MK.ai_menu(False))
+        else:
+            await target.answer(
+                T.HELP_AI_DISABLED,
+                parse_mode=screens.PARSE_MODE,
+                reply_markup=KB.main_menu(),
+            )
         return
 
-    if not ai_service.enabled:
-        await screens.show(callback, T.HELP_AI_DISABLED, MK.ai_menu(False))
-        return
-
-    await state.set_state(Flow.ai_prompt)
-    await screens.ask(
-            callback,
-f"✨ <b>Создание сценария</b>\n\n{T.field_prompt('ai_prompt')}\n\n"
-            "AI придумает <i>вымышленный</i> диалог для юмора, мемов или контента.\n\n"
-            f"{T.INPUT_CANCEL_HINT}",
-            reply_markup=KB.input_menu("Опишите сценарий…")
-        )
+    await state.clear()
+    prompt = (
+        f"✨ <b>Создание сценария</b>\n\n{T.field_prompt('ai_prompt')}\n\n"
+        "AI придумает <i>вымышленный</i> диалог для юмора, мемов или контента.\n\n"
+        f"{T.INPUT_CANCEL_HINT}"
+    )
+    if isinstance(target, CallbackQuery):
+        await screens.safe_answer(target)
+    sent = await screens.ask(
+        target,
+        prompt,
+        reply_markup=KB.input_menu("Опишите сценарий…"),
+    )
+    if sent:
+        await state.set_state(Flow.ai_prompt)
 
 
 @router.message(F.text == KB.BTN_SETTINGS)
@@ -213,4 +232,11 @@ async def btn_settings(message: Message, state: FSMContext) -> None:
     await open_settings(message, state)
 
 
-__all__ = ["router", "open_settings", "on_menu", "on_settings", "on_ai_entry"]
+__all__ = [
+    "router",
+    "open_settings",
+    "open_ai_entry",
+    "on_menu",
+    "on_settings",
+    "on_ai_entry",
+]

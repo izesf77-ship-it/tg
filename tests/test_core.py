@@ -1,28 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aiogram.types import BufferedInputFile, CallbackQuery, User as TelegramUser
 from PIL import Image
 from sqlalchemy import delete, select
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from bot import screens
 from bot.config import settings
 from bot.database.repositories import BroadcastRepository, UsageRepository
+from bot.database.repositories.user import UserRepository
 from bot.generators import AVAILABLE_STYLES, get_renderer
 from bot.generators.fonts import get_font_manager, is_emoji_char, split_emoji_runs
 from bot.generators.text_layout import wrap_text
-from bot.handlers import admin, create, editor, start
+from bot.handlers import ai as ai_handlers
+from bot.handlers import admin, create, editor, menus as menu_handlers, start
+from bot.keyboards import common as common_kb
+from bot.keyboards.create import style_menu
 from bot.models import Base, Chat, User
 from bot.schemas import ChatConfig, MediaItem, Message, MessageKind, Participant, Reaction
 from bot.services.chat_service import ChatService
 from bot.services.limit_service import LimitService
 from bot.services.render_service import RenderService
+from bot.states import Flow
 from bot.utils import text_utils as TX
 from bot.utils.errors import AIUnavailableError, RenderError
 from bot.utils.files import is_image_bytes
@@ -156,6 +165,126 @@ class CreationFlowTests(unittest.IsolatedAsyncioTestCase):
                 await AIService().generate("вымышленный диалог")
 
 
+class AIEntryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_entry_button_opens_prompt_state(self) -> None:
+        from bot.services.ai_service import ai_service
+
+        state = SimpleNamespace(set_state=AsyncMock(), clear=AsyncMock())
+        message = SimpleNamespace(answer=AsyncMock())
+        with (
+            patch.object(ai_service, "api_key", "test-key"),
+            patch.object(menu_handlers.screens, "ask", new_callable=AsyncMock,
+                         return_value=True) as ask,
+        ):
+            await menu_handlers.open_ai_entry(message, state)
+
+        state.set_state.assert_awaited_once_with(Flow.ai_prompt)
+        ask.assert_awaited_once()
+        self.assertIn("вымышленный", ask.await_args.args[1])
+
+    async def test_ai_entry_shows_configuration_help_when_disabled(self) -> None:
+        from bot.services.ai_service import ai_service
+
+        state = SimpleNamespace(set_state=AsyncMock(), clear=AsyncMock())
+        message = SimpleNamespace(answer=AsyncMock())
+        with patch.object(ai_service, "api_key", ""):
+            await menu_handlers.open_ai_entry(message, state)
+
+        state.clear.assert_awaited_once()
+        message.answer.assert_awaited_once()
+        self.assertIn("OpenRouter", message.answer.await_args.args[0])
+
+    async def test_ai_prompt_creates_draft_and_opens_editor(self) -> None:
+        from bot.services.ai_service import ai_service
+
+        generated = ChatConfig(
+            title="Сценарий",
+            participants=[
+                Participant(name="Алиса", side=0),
+                Participant(name="Боб", side=1),
+            ],
+            messages=[Message(text="Привет", side=0, author_index=0)],
+        )
+        status = SimpleNamespace(edit_text=AsyncMock(), delete=AsyncMock())
+        message = SimpleNamespace(
+            text="Придумай короткий вымышленный диалог",
+            from_user=SimpleNamespace(id=1001),
+            answer=AsyncMock(return_value=status),
+        )
+        state = SimpleNamespace(
+            set_state=AsyncMock(),
+            update_data=AsyncMock(),
+        )
+        chat = SimpleNamespace(id=42)
+        chats = SimpleNamespace(
+            count_all=AsyncMock(return_value=0),
+            create=AsyncMock(return_value=(chat, ChatConfig())),
+            save=AsyncMock(),
+        )
+        users = SimpleNamespace(count_chat=AsyncMock(), count_ai=AsyncMock())
+        limits = SimpleNamespace(
+            max_chats=lambda premium: 10,
+            reserve_ai=AsyncMock(return_value=True),
+        )
+
+        with (
+            patch.object(ai_service, "api_key", "test-key"),
+            patch.object(ai_service, "generate", new_callable=AsyncMock,
+                         return_value=generated) as generate,
+            patch.object(
+                ai_handlers, "get_services",
+                return_value={"chats": chats, "user": users, "limits": limits},
+            ),
+            patch.object(ai_handlers, "is_premium", return_value=False),
+            patch("bot.handlers.editor.show_editor", new_callable=AsyncMock) as show,
+        ):
+            await ai_handlers.on_ai_prompt(message, state)
+
+        generate.assert_awaited_once_with("Придумай короткий вымышленный диалог")
+        chats.create.assert_awaited_once_with(
+            1001, style="telegram", template="ai", is_draft=True
+        )
+        chats.save.assert_awaited_once_with(1001, 42, generated)
+        users.count_chat.assert_awaited_once_with(1001)
+        users.count_ai.assert_awaited_once_with(1001)
+        state.set_state.assert_awaited_once_with(Flow.editor)
+        show.assert_awaited_once()
+
+    def test_ai_generated_config_keeps_disclaimer_disabled_by_default(self) -> None:
+        config = AIService.build_config(
+            {
+                "title": "Сценарий",
+                "participants": [{"name": "А"}, {"name": "Б"}],
+                "messages": [{"author": 0, "text": "Привет"}],
+            }
+        )
+
+        self.assertEqual(config.disclaimer, "")
+
+    def test_ai_entry_is_reachable_from_main_and_style_menus(self) -> None:
+        main_callbacks = [
+            button.callback_data
+            for row in common_kb.main_menu_inline().inline_keyboard
+            for button in row
+        ]
+        style_callbacks = [
+            button.callback_data
+            for row in style_menu().inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("ai:ask", main_callbacks)
+        self.assertIn("ai:ask", style_callbacks)
+        self.assertIn(
+            common_kb.BTN_AI,
+            [
+                button.text
+                for row in common_kb.main_menu().keyboard
+                for button in row
+            ],
+        )
+
+
 class PersistenceAndLimitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.engine = create_async_engine(
@@ -178,6 +307,38 @@ class PersistenceAndLimitTests(unittest.IsolatedAsyncioTestCase):
             chats = await session.execute(select(Chat))
 
         self.assertEqual(chats.scalars().all(), [])
+
+    async def test_concurrent_user_registration_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "registration.sqlite3"
+            engine = create_async_engine(
+                URL.create("sqlite+aiosqlite", database=str(db_path)),
+                connect_args={"timeout": 30},
+            )
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+                async def register():
+                    async with sessions() as session:
+                        user, created = await UserRepository(session).get_or_create(
+                            1001,
+                            username="test_user",
+                            first_name="Test",
+                        )
+                        await session.commit()
+                        return user.id, created
+
+                results = await asyncio.gather(*(register() for _ in range(10)))
+
+                async with sessions() as session:
+                    users = await session.execute(select(User))
+                self.assertEqual([user_id for user_id, _ in results], [1001] * 10)
+                self.assertEqual(sum(created for _, created in results), 1)
+                self.assertEqual(len(users.scalars().all()), 1)
+            finally:
+                await engine.dispose()
 
     async def test_action_limit_blocks_only_after_allowed_actions(self) -> None:
         previous_limit = settings.limit_actions_per_minute

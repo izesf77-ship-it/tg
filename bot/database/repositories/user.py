@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import User
@@ -27,24 +28,38 @@ class UserRepository:
         last_name: str | None = None,
         language: str = "ru",
         is_admin: bool = False,
-    ) -> User:
-        user = await self.get(user_id)
+    ) -> tuple[User, bool]:
         now = utcnow()
-        if user is None:
-            user = User(
+        result = await self.session.execute(
+            sqlite_insert(User)
+            .values(
                 id=int(user_id),
                 username=username,
                 first_name=first_name,
                 last_name=last_name,
                 language=language or "ru",
+                is_premium=False,
+                is_banned=False,
                 is_admin=is_admin,
+                total_images=0,
+                total_ai=0,
+                total_chats=0,
+                total_actions=0,
                 created_at=now,
                 last_activity=now,
+                premium_until=None,
             )
-            self.session.add(user)
-            await self.session.flush()
-            return user
+            .on_conflict_do_nothing(index_elements=[User.id])
+        )
+        created = result.rowcount == 1
+        user = await self.get(user_id)
+        if user is None:
+            raise RuntimeError(f"Пользователь {user_id} исчез во время регистрации")
 
+        if created:
+            return user, True
+
+        now = utcnow()
         changed = False
         if username and user.username != username:
             user.username = username
@@ -64,7 +79,7 @@ class UserRepository:
         if changed:
             self.session.add(user)
             await self.session.flush()
-        return user
+        return user, False
 
     async def touch(self, user_id: int) -> None:
         user = await self.get(user_id)
