@@ -351,20 +351,26 @@ def preview_keyboard(chat_id: int) -> InlineKeyboardMarkup:
     return with_back(kb, back_to_list(chat_id)).as_markup()
 
 
-def done_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+def done_keyboard(chat_id: int, saved: bool = False) -> InlineKeyboardMarkup:
     """Клавиатура под готовым изображением."""
     kb = InlineKeyboardBuilder()
-    kb.row(
+    actions = [
         InlineKeyboardButton(
             text="🔄 Изменить", callback_data=C.cb(C.S_EDIT, "open_done", chat_id)
-        ),
-        InlineKeyboardButton(
-            text="📂 Сохранить", callback_data=C.cb(C.S_EDIT, "save", chat_id)
-        ),
+        )
+    ]
+    if not saved:
+        actions.append(
+            InlineKeyboardButton(
+                text="📂 Сохранить", callback_data=C.cb(C.S_EDIT, "save", chat_id)
+            )
+        )
+    actions.append(
         InlineKeyboardButton(
             text="🗑 Удалить", callback_data=C.cb(C.S_EDIT, "drop", chat_id)
-        ),
+        )
     )
+    kb.row(*actions)
     kb.row(
         InlineKeyboardButton(text="⬅️ В меню", callback_data=C.cb(C.S_MENU, "home"))
     )

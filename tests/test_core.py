@@ -14,6 +14,7 @@ from aiogram.types import (
     CallbackQuery,
     Chat as TelegramChat,
     Message as TelegramMessage,
+    PhotoSize,
     ReplyKeyboardRemove,
     User as TelegramUser,
 )
@@ -142,6 +143,70 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
 
         answer.assert_awaited_once()
         self.assertIs(answer.await_args.kwargs["reply_markup"], keyboard)
+
+    async def test_show_callback_edits_photo_caption_instead_of_missing_text(self) -> None:
+        message = TelegramMessage(
+            message_id=1,
+            date=datetime.now(timezone.utc),
+            chat=TelegramChat(id=1, type="private"),
+            photo=[
+                PhotoSize(
+                    file_id="photo",
+                    file_unique_id="photo-unique",
+                    width=1,
+                    height=1,
+                )
+            ],
+        )
+        callback = CallbackQuery(
+            id="test",
+            from_user=TelegramUser(id=1001, is_bot=False, first_name="test"),
+            chat_instance="test",
+            data="ed:save:42",
+            message=message,
+        )
+        keyboard = common_kb.main_menu_inline()
+
+        with (
+            patch.object(CallbackQuery, "answer", new_callable=AsyncMock) as answer,
+            patch.object(TelegramMessage, "edit_caption", new_callable=AsyncMock) as edit_caption,
+            patch.object(TelegramMessage, "edit_text", new_callable=AsyncMock) as edit_text,
+        ):
+            await screens.show(callback, "saved", keyboard)
+
+        answer.assert_awaited_once()
+        edit_caption.assert_awaited_once()
+        edit_text.assert_not_awaited()
+        self.assertEqual(edit_caption.await_args.kwargs["caption"], "saved")
+        self.assertIs(edit_caption.await_args.kwargs["reply_markup"], keyboard)
+
+    async def test_saving_done_chat_finishes_it_and_removes_save_button(self) -> None:
+        config = ChatConfig(messages=[Message(text="Hello")])
+        saved_chat = SimpleNamespace(id=42)
+        chats = SimpleNamespace(finish=AsyncMock(return_value=saved_chat))
+        state = SimpleNamespace(update_data=AsyncMock())
+        callback = SimpleNamespace()
+
+        with (
+            patch.object(editor, "_require_chat", new_callable=AsyncMock,
+                         return_value=(42, config, 1001)),
+            patch.object(editor, "get_services", return_value={"chats": chats}),
+            patch.object(editor.screens, "show", new_callable=AsyncMock) as show,
+        ):
+            await editor.on_save(callback, state)
+
+        chats.finish.assert_awaited_once_with(1001, 42, config)
+        state.update_data.assert_awaited_once_with(finished=True)
+        keyboard = show.await_args.args[2]
+        callbacks = [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        ]
+        self.assertIn("ed:open_done:42", callbacks)
+        self.assertIn("ed:drop:42", callbacks)
+        self.assertNotIn("ed:save:42", callbacks)
+        self.assertIn("Сохранено", show.await_args.args[1])
 
 
 class AdminPermissionTests(unittest.TestCase):

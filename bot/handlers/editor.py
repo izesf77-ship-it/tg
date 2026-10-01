@@ -1031,12 +1031,13 @@ async def on_save(callback: CallbackQuery, state: FSMContext) -> None:
         return
     chats = get_services()["chats"]
     chat = await chats.finish(user_id, chat_id, config)
+    await state.update_data(finished=True)
     await screens.show(
         callback,
         f"📂 <b>Сохранено</b>\n\n"
         f"Переписка #{chat.id} добавлена в «Мои переписки».\n"
         f"{TX.messages_word(len(config.messages))}",
-        EK.done_keyboard(chat_id),
+        EK.done_keyboard(chat_id, saved=True),
     )
 
 

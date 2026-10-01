@@ -50,9 +50,19 @@ async def _edit_text(
     if message is None:
         return
     try:
-        await message.edit_text(
-            text, parse_mode=PARSE_MODE, reply_markup=keyboard, disable_web_page_preview=True
-        )
+        if message.photo:
+            await message.edit_caption(
+                caption=text[:1024],
+                parse_mode=PARSE_MODE,
+                reply_markup=keyboard,
+            )
+        else:
+            await message.edit_text(
+                text,
+                parse_mode=PARSE_MODE,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return
