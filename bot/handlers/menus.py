@@ -135,13 +135,9 @@ async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "premium":
-        from bot.services.premium_service import premium_service
+        from bot.handlers.payments import show_store
 
-        await screens.show(
-            callback,
-            T.premium_screen(premium_service.features(), premium_service.stars_price),
-            MK.global_settings_menu(),
-        )
+        await show_store(callback)
         return
 
     if action == "wipe":

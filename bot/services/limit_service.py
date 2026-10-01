@@ -12,19 +12,21 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.database.repositories import UsageRepository, UserRepository
 from bot.models.base import utcnow
 from bot.models.setting import Setting
+from bot.models import AICreditBalance, StarPayment
 
 logger = logging.getLogger(__name__)
 
 KIND_IMAGE = "image"
 KIND_IMAGE_ATTEMPT = "image_attempt"
 KIND_AI = "ai"
+KIND_AI_CREDIT = "ai_credit"
 KIND_ACTION = "action"
 _RATE_LOCKS = tuple(asyncio.Lock() for _ in range(64))
 
@@ -54,6 +56,8 @@ class LimitResult:
     limit: int = 0
     retry_after: int = 0
     text: str = ""
+    credit_used: bool = False
+    credit_payment_id: int | None = None
 
     def __bool__(self) -> bool:
         return self.allowed
@@ -160,7 +164,97 @@ class LimitService:
             if check:
                 await self.log_ai(user_id)
                 await self.session.commit()
-            return check
+                return check
+
+            payment_result = await self.session.execute(
+                select(StarPayment)
+                .where(
+                    StarPayment.user_id == int(user_id),
+                    StarPayment.credits_remaining > 0,
+                    StarPayment.refunded_at.is_(None),
+                )
+                .order_by(StarPayment.created_at, StarPayment.id)
+                .limit(1)
+            )
+            credit_payment = payment_result.scalar_one_or_none()
+            if credit_payment is not None:
+                spent = await self.session.execute(
+                    update(StarPayment)
+                    .where(
+                        StarPayment.id == credit_payment.id,
+                        StarPayment.credits_remaining > 0,
+                        StarPayment.refunded_at.is_(None),
+                    )
+                    .values(credits_remaining=StarPayment.credits_remaining - 1)
+                )
+                balance_spent = None
+                if spent.rowcount:
+                    balance_spent = await self.session.execute(
+                        update(AICreditBalance)
+                        .where(
+                            AICreditBalance.user_id == int(user_id),
+                            AICreditBalance.balance > 0,
+                        )
+                        .values(
+                            balance=AICreditBalance.balance - 1,
+                            updated_at=utcnow(),
+                        )
+                    )
+            else:
+                spent = None
+                balance_spent = None
+            if spent is not None and spent.rowcount and balance_spent and balance_spent.rowcount:
+                await self.usage.log(user_id, KIND_AI_CREDIT)
+                await self.session.commit()
+                return LimitResult(
+                    True,
+                    check.used,
+                    check.limit,
+                    credit_used=True,
+                    credit_payment_id=credit_payment.id,
+                )
+            if spent is not None and spent.rowcount:
+                await self.session.rollback()
+                logger.error(
+                    "AI credit ledger and balance disagree (user=%s)",
+                    user_id,
+                )
+            return LimitResult(
+                False,
+                check.used,
+                check.limit,
+                check.retry_after,
+                "Часовой лимит AI исчерпан и купленных генераций нет. "
+                "Выберите подходящий пакет в магазине: /premium",
+            )
+
+    async def refund_ai_credit(self, user_id: int, payment_id: int | None) -> None:
+        """Restore a purchased AI credit when the provider failed."""
+        if payment_id is None:
+            raise ValueError("A purchased AI credit must be linked to its payment")
+        await self.session.rollback()
+        payment_result = await self.session.execute(
+            update(StarPayment)
+            .where(
+                StarPayment.id == int(payment_id),
+                StarPayment.user_id == int(user_id),
+                StarPayment.refunded_at.is_(None),
+            )
+            .values(credits_remaining=StarPayment.credits_remaining + 1)
+        )
+        if not payment_result.rowcount:
+            raise RuntimeError("The purchased AI credit can no longer be restored")
+        result = await self.session.execute(
+            update(AICreditBalance)
+            .where(AICreditBalance.user_id == int(user_id))
+            .values(
+                balance=AICreditBalance.balance + 1,
+                updated_at=utcnow(),
+            )
+        )
+        if not result.rowcount:
+            self.session.add(AICreditBalance(user_id=int(user_id), balance=1))
+        await self.session.commit()
 
     async def _hourly(
         self, user_id: int, kind: str, limit: int
@@ -271,6 +365,7 @@ __all__ = [
     "KIND_IMAGE",
     "KIND_IMAGE_ATTEMPT",
     "KIND_AI",
+    "KIND_AI_CREDIT",
     "KIND_ACTION",
     "LIMIT_KEYS",
 ]

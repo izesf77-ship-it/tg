@@ -37,6 +37,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_AI)],
             [KeyboardButton(text=BTN_MY), KeyboardButton(text=BTN_HELP)],
             [KeyboardButton(text=BTN_SETTINGS)],
+            [KeyboardButton(text=BTN_PREMIUM)],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие…",

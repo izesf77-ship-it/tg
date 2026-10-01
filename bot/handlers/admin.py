@@ -5,6 +5,7 @@ from __future__ import annotations
 from bot.middleware import db_session, get_services
 from bot.services.limit_service import ensure_loaded
 from bot.services.limit_service import LIMIT_KEYS
+from bot.services.premium_service import premium_service
 import asyncio
 import logging
 
@@ -219,7 +220,7 @@ async def show_users(target, page: int = 0) -> None:
 
     lines = [f"👥 <b>Пользователи</b> ({total})", ""]
     for user in users:
-        premium = " ⭐️" if user.is_premium else ""
+        premium = " ⭐️" if premium_service.is_premium(user) else ""
         lines.append(
             f"<code>{user.id}</code> {TX.esc(user.display_name)}{premium}\n"
             f"   🖼 {user.total_images} · 📂 {user.total_chats} · ✨ {user.total_ai}"

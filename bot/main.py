@@ -23,7 +23,7 @@ from bot.database.engine import create_all, dispose_engine, session_scope
 from bot.database.repositories import UsageRepository
 from bot.generators.fonts import get_font_manager
 from bot.health import set_status, start_health_server
-from bot.handlers import admin, ai, create, editor, errors, menus, my_chats, start
+from bot.handlers import admin, ai, create, editor, errors, menus, my_chats, payments, start
 from bot.logging_config import setup_logging
 from bot.middleware import DbSessionMiddleware, ErrorMiddleware
 from bot.services.ai_service import ai_service
@@ -34,8 +34,11 @@ COMMANDS = [
     BotCommand(command="start", description="Запустить бота"),
     BotCommand(command="help", description="Как это работает"),
     BotCommand(command="cancel", description="Отменить текущее действие"),
-    BotCommand(command="premium", description="Информация о Premium"),
+    BotCommand(command="premium", description="Магазин Stars и Premium"),
+    BotCommand(command="terms", description="Условия покупок"),
+    BotCommand(command="paysupport", description="Поддержка по оплатам"),
     BotCommand(command="admin", description="Админ-панель"),
+    BotCommand(command="payments", description="Платежи (админ)"),
 ]
 
 
@@ -56,13 +59,16 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(my_chats.router)
     dp.include_router(ai.router)
     dp.include_router(admin.router)
+    dp.include_router(payments.router)
     dp.include_router(errors.router)  # catch-all — строго последний
 
     # Middleware: сначала ловим исключения, затем открываем сессию
     dp.message.middleware(ErrorMiddleware())
     dp.callback_query.middleware(ErrorMiddleware())
+    dp.pre_checkout_query.middleware(ErrorMiddleware())
     dp.message.middleware(DbSessionMiddleware())
     dp.callback_query.middleware(DbSessionMiddleware())
+    dp.pre_checkout_query.middleware(DbSessionMiddleware())
     return dp
 
 

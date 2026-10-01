@@ -7,7 +7,13 @@ from contextvars import ContextVar, Token
 from typing import Any, Awaitable, Callable, Dict
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message, TelegramObject, User as TgUser
+from aiogram.types import (
+    CallbackQuery,
+    Message,
+    PreCheckoutQuery,
+    TelegramObject,
+    User as TgUser,
+)
 
 from bot.database.engine import session_scope
 from bot.services.chat_service import bind as bind_chats
@@ -72,7 +78,9 @@ def db_session():
 
 def is_premium() -> bool:
     """Premium-статус текущего пользователя (безопасно)."""
-    return bool(getattr(get_db_user(), "is_premium", False))
+    from bot.services.premium_service import premium_service
+
+    return premium_service.is_premium(get_db_user())
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -91,7 +99,9 @@ class DbSessionMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         tg_user: TgUser | None = data.get("event_from_user")
-        if tg_user is None and isinstance(event, (Message, CallbackQuery)):
+        if tg_user is None and isinstance(
+            event, (Message, CallbackQuery, PreCheckoutQuery)
+        ):
             tg_user = event.from_user
 
         # Бот и чат события: нужны, чтобы отправить изображение даже из
@@ -170,11 +180,15 @@ async def _notify_banned(event: TelegramObject) -> None:
             await event.answer(text)
         elif isinstance(event, CallbackQuery):
             await event.answer(text, show_alert=True)
+        elif isinstance(event, PreCheckoutQuery):
+            await event.answer(ok=False, error_message=text[:200])
     except Exception as exc:  # noqa: BLE001 # pragma: no cover
         logger.debug("Не удалось отправить уведомление о блокировке: %s", exc)
 
 
 def _is_control_message(event: TelegramObject) -> bool:
+    if isinstance(event, PreCheckoutQuery):
+        return True
     if not isinstance(event, Message):
         return False
     text = (event.text or "").strip()
@@ -228,6 +242,8 @@ async def _send_error(event: TelegramObject, text: str) -> None:
             await event.answer(text)
         elif isinstance(event, CallbackQuery):
             await event.answer(text, show_alert=True)
+        elif isinstance(event, PreCheckoutQuery):
+            await event.answer(ok=False, error_message=text[:200])
     except Exception as exc:  # noqa: BLE001 # pragma: no cover
         logger.debug("Не удалось отправить сообщение об ошибке: %s", exc)
 

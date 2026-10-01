@@ -4,7 +4,7 @@ import asyncio
 import io
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -16,6 +16,7 @@ from aiogram.types import (
     Message as TelegramMessage,
     PhotoSize,
     ReplyKeyboardRemove,
+    SuccessfulPayment,
     User as TelegramUser,
 )
 from PIL import Image, ImageDraw
@@ -33,17 +34,33 @@ from bot.generators import drawing
 from bot.generators.fonts import get_font_manager, is_emoji_char, split_emoji_runs
 from bot.generators.text_layout import wrap_text
 from bot.handlers import ai as ai_handlers
-from bot.handlers import admin, create, editor, menus as menu_handlers, start
+from bot.handlers import (
+    admin,
+    create,
+    editor,
+    menus as menu_handlers,
+    payments as payment_handlers,
+    start,
+)
 from bot.keyboards import common as common_kb
 from bot.keyboards.create import style_menu
-from bot.models import Base, Chat, User
+from bot.models import AICreditBalance, Base, Chat, PaymentTermsAcceptance, StarPayment, User
 from bot.schemas import ChatConfig, MediaItem, Message, MessageKind, Participant, Reaction
 from bot.services.chat_service import ChatService
-from bot.services.limit_service import LimitService
+from bot.services.limit_service import LimitResult, LimitService
+from bot.services.payments_service import (
+    PAYMENT_TERMS,
+    TERMS_VERSION,
+    PaymentsService,
+    get_product,
+    invoice_payload,
+    products,
+)
+from bot.services.premium_service import premium_service
 from bot.services.render_service import RenderService
 from bot.states import Flow
 from bot.utils import text_utils as TX
-from bot.utils.errors import AIUnavailableError, RenderError
+from bot.utils.errors import AIError, AIUnavailableError, RenderError
 from bot.utils.files import is_image_bytes
 from bot.services.ai_service import AIService
 from bot.utils.time_utils import parse_time
@@ -158,6 +175,14 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+        self.assertIn(
+            common_kb.BTN_PREMIUM,
+            [
+                button.text
+                for row in common_kb.main_menu().keyboard
+                for button in row
+            ],
+        )
         callback = CallbackQuery(
             id="test",
             from_user=TelegramUser(id=1001, is_bot=False, first_name="test"),
@@ -209,11 +234,119 @@ class ScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Сохранено", show.await_args.args[1])
 
 
+class TelegramStarsFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_buy_callback_sends_stars_invoice(self) -> None:
+        invoice = AsyncMock()
+        callback = SimpleNamespace(
+            data="pay:buy:ai2",
+            from_user=SimpleNamespace(id=81),
+            bot=SimpleNamespace(send_invoice=invoice),
+        )
+        payments = SimpleNamespace(has_accepted_terms=AsyncMock(return_value=True))
+
+        with (
+            patch.object(payment_handlers, "PaymentsService", return_value=payments),
+            patch.object(payment_handlers, "db_session", return_value=object()),
+            patch.object(payment_handlers, "get_db_user",
+                         return_value=SimpleNamespace(is_premium=False, premium_until=None)),
+            patch.object(payment_handlers.screens, "safe_answer", new_callable=AsyncMock),
+            patch.object(settings, "premium_enabled", True),
+            patch.object(payment_handlers.ai_service, "api_key", "test-key"),
+        ):
+            await payment_handlers.on_payment_action(callback)
+
+        invoice.assert_awaited_once()
+        self.assertEqual(invoice.await_args.kwargs["currency"], "XTR")
+        self.assertEqual(invoice.await_args.kwargs["provider_token"], "")
+        self.assertEqual(invoice.await_args.kwargs["payload"], "stars:81:ai2")
+        self.assertEqual(invoice.await_args.kwargs["prices"][0].amount, 15)
+
+    async def test_pre_checkout_accepts_only_valid_user_currency_and_price(self) -> None:
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(id=82),
+            invoice_payload="stars:82:ai2",
+            currency="XTR",
+            total_amount=15,
+            answer=AsyncMock(),
+        )
+        payments = SimpleNamespace(has_accepted_terms=AsyncMock(return_value=True))
+
+        with (
+            patch.object(payment_handlers, "PaymentsService", return_value=payments),
+            patch.object(payment_handlers, "db_session", return_value=object()),
+            patch.object(settings, "premium_enabled", True),
+            patch.object(payment_handlers.ai_service, "api_key", "test-key"),
+        ):
+            await payment_handlers.on_pre_checkout(query)
+
+        query.answer.assert_awaited_once_with(ok=True)
+
+    async def test_pre_checkout_rejects_invoice_for_another_buyer(self) -> None:
+        query = SimpleNamespace(
+            from_user=SimpleNamespace(id=83),
+            invoice_payload="stars:82:ai2",
+            currency="XTR",
+            total_amount=15,
+            answer=AsyncMock(),
+        )
+        payments = SimpleNamespace(has_accepted_terms=AsyncMock())
+
+        with (
+            patch.object(payment_handlers, "PaymentsService", return_value=payments),
+            patch.object(payment_handlers, "db_session", return_value=object()),
+            patch.object(settings, "premium_enabled", True),
+        ):
+            await payment_handlers.on_pre_checkout(query)
+
+        query.answer.assert_awaited_once()
+        self.assertFalse(query.answer.await_args.kwargs["ok"])
+        payments.has_accepted_terms.assert_not_awaited()
+
+    async def test_buy_requires_current_terms_acceptance(self) -> None:
+        callback = SimpleNamespace(
+            data="pay:buy:ai2",
+            from_user=SimpleNamespace(id=84),
+            bot=SimpleNamespace(send_invoice=AsyncMock()),
+        )
+        payments = SimpleNamespace(has_accepted_terms=AsyncMock(return_value=False))
+
+        with (
+            patch.object(payment_handlers, "PaymentsService", return_value=payments),
+            patch.object(payment_handlers, "db_session", return_value=object()),
+            patch.object(payment_handlers.screens, "show", new_callable=AsyncMock) as show,
+            patch.object(settings, "premium_enabled", True),
+            patch.object(payment_handlers.ai_service, "api_key", "test-key"),
+        ):
+            await payment_handlers.on_payment_action(callback)
+
+        show.assert_awaited_once()
+        self.assertEqual(show.await_args.args[1], PAYMENT_TERMS)
+        callback.bot.send_invoice.assert_not_awaited()
+
+
 class AdminPermissionTests(unittest.TestCase):
     def test_admin_access_uses_configured_ids(self) -> None:
         with patch.object(settings, "admin_ids", [1001]):
             self.assertTrue(admin.is_admin(1001))
             self.assertFalse(admin.is_admin(1002))
+
+
+class PremiumRulesTests(unittest.TestCase):
+    def test_premium_expiry_is_enforced_and_manual_grants_can_be_permanent(self) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        self.assertTrue(premium_service.is_premium(SimpleNamespace(
+            is_premium=True, premium_until=None
+        )))
+        self.assertTrue(premium_service.is_premium(SimpleNamespace(
+            is_premium=True, premium_until=now + timedelta(days=1)
+        )))
+        self.assertFalse(premium_service.is_premium(SimpleNamespace(
+            is_premium=True, premium_until=now - timedelta(seconds=1)
+        )))
+        self.assertFalse(premium_service.is_premium(SimpleNamespace(
+            is_premium=False, premium_until=now + timedelta(days=1)
+        )))
 
 
 class StatsCommandTests(unittest.IsolatedAsyncioTestCase):
@@ -366,6 +499,47 @@ class AIEntryTests(unittest.IsolatedAsyncioTestCase):
             ReplyKeyboardRemove,
         )
 
+    async def test_ai_provider_failure_restores_a_paid_credit(self) -> None:
+        from bot.services.ai_service import ai_service
+
+        status = SimpleNamespace(edit_text=AsyncMock())
+        message = SimpleNamespace(
+            text="Придумай вымышленный диалог",
+            from_user=SimpleNamespace(id=1001),
+            answer=AsyncMock(return_value=status),
+        )
+        state = SimpleNamespace()
+        chats = SimpleNamespace(count_all=AsyncMock(return_value=0))
+        users = SimpleNamespace()
+        limits = SimpleNamespace(
+            max_chats=lambda premium: 10,
+            reserve_ai=AsyncMock(
+                return_value=LimitResult(
+                    True,
+                    used=5,
+                    limit=5,
+                    credit_used=True,
+                    credit_payment_id=123,
+                )
+            ),
+            refund_ai_credit=AsyncMock(),
+        )
+        with (
+            patch.object(ai_service, "api_key", "test-key"),
+            patch.object(ai_service, "generate", new_callable=AsyncMock,
+                         side_effect=AIError()),
+            patch.object(
+                ai_handlers,
+                "get_services",
+                return_value={"chats": chats, "user": users, "limits": limits},
+            ),
+            patch.object(ai_handlers, "is_premium", return_value=False),
+        ):
+            await ai_handlers.on_ai_prompt(message, state)
+
+        limits.refund_ai_credit.assert_awaited_once_with(1001, 123)
+        status.edit_text.assert_awaited_once()
+
     def test_ai_generated_config_keeps_disclaimer_disabled_by_default(self) -> None:
         config = AIService.build_config(
             {
@@ -484,6 +658,235 @@ class PersistenceAndLimitTests(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.limit_image_per_hour = old_image_limit
             settings.limit_ai_per_hour = old_ai_limit
+
+    async def test_ai_credit_packages_grant_once_and_are_used_after_hourly_quota(self) -> None:
+        async with self.sessions() as session:
+            session.add(User(id=71, first_name="Buyer"))
+            await session.flush()
+            payments = PaymentsService(session)
+            product = get_product("ai5")
+            self.assertIsNotNone(product)
+            payload = invoice_payload(71, "ai5")
+
+            first = await payments.record_payment(
+                user_id=71,
+                product=product,
+                payload=payload,
+                currency="XTR",
+                stars=30,
+                telegram_charge_id="charge-ai-71",
+                provider_charge_id="",
+            )
+            duplicate = await payments.record_payment(
+                user_id=71,
+                product=product,
+                payload=payload,
+                currency="XTR",
+                stars=30,
+                telegram_charge_id="charge-ai-71",
+                provider_charge_id="",
+            )
+            await session.commit()
+
+            self.assertTrue(first)
+            self.assertFalse(duplicate)
+            self.assertEqual(await payments.credit_balance(71), 5)
+            rows = await session.execute(select(StarPayment))
+            self.assertEqual(len(rows.scalars().all()), 1)
+
+            limits = LimitService(session)
+            with patch.object(
+                limits,
+                "value",
+                side_effect=lambda key: 1 if key == "limit_ai_per_hour" else 0,
+            ):
+                self.assertTrue(await limits.reserve_ai(71))
+                paid_payment_id = None
+                for _ in range(5):
+                    paid = await limits.reserve_ai(71)
+                    self.assertTrue(paid)
+                    self.assertTrue(paid.credit_used)
+                    paid_payment_id = paid.credit_payment_id
+                self.assertEqual(await payments.credit_balance(71), 0)
+                self.assertFalse(await limits.reserve_ai(71))
+
+            await limits.refund_ai_credit(71, paid_payment_id)
+            self.assertEqual(await payments.credit_balance(71), 1)
+            credit_payment = await session.get(StarPayment, paid_payment_id)
+            self.assertEqual(credit_payment.credits_remaining, 1)
+
+    async def test_premium_payment_stacks_thirty_days_and_records_terms(self) -> None:
+        async with self.sessions() as session:
+            user = User(id=72, first_name="Buyer")
+            session.add(user)
+            await session.flush()
+            payments = PaymentsService(session)
+            await payments.accept_terms(72)
+            self.assertTrue(await payments.has_accepted_terms(72))
+            accepted = await session.get(PaymentTermsAcceptance, 72)
+            self.assertEqual(accepted.version, TERMS_VERSION)
+
+            product = get_product("premium30")
+            for charge_id in ("premium-72-a", "premium-72-b"):
+                self.assertTrue(
+                    await payments.record_payment(
+                        user_id=72,
+                        product=product,
+                        payload=invoice_payload(72, "premium30"),
+                        currency="XTR",
+                        stars=250,
+                        telegram_charge_id=charge_id,
+                        provider_charge_id="",
+                    )
+                )
+                await session.commit()
+            await session.refresh(user)
+            self.assertTrue(user.is_premium)
+            self.assertIsNotNone(user.premium_until)
+            self.assertGreaterEqual(
+                user.premium_until,
+                datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=59),
+            )
+            self.assertTrue(premium_service.is_premium(user))
+            self.assertEqual(await payments.credit_balance(72), 0)
+
+    async def test_payment_service_rejects_wrong_currency_amount_or_buyer_payload(self) -> None:
+        async with self.sessions() as session:
+            session.add(User(id=73, first_name="Buyer"))
+            await session.flush()
+            service = PaymentsService(session)
+            product = get_product("ai2")
+            for currency, amount, payload in (
+                ("USD", 15, invoice_payload(73, "ai2")),
+                ("XTR", 14, invoice_payload(73, "ai2")),
+                ("XTR", 15, invoice_payload(74, "ai2")),
+            ):
+                with self.subTest(currency=currency, amount=amount, payload=payload):
+                    with self.assertRaises(ValueError):
+                        await service.record_payment(
+                            user_id=73,
+                            product=product,
+                            payload=payload,
+                            currency=currency,
+                            stars=amount,
+                            telegram_charge_id=f"invalid-{currency}-{amount}-{payload}",
+                            provider_charge_id="",
+                        )
+
+    async def test_admin_can_refund_an_unused_ai_pack_once(self) -> None:
+        async with self.sessions() as session:
+            session.add(User(id=74, first_name="Buyer"))
+            await session.flush()
+            service = PaymentsService(session)
+            product = get_product("ai2")
+            await service.record_payment(
+                user_id=74,
+                product=product,
+                payload=invoice_payload(74, product.id),
+                currency="XTR",
+                stars=15,
+                telegram_charge_id="charge-refund-74",
+                provider_charge_id="",
+            )
+            await session.commit()
+
+            message = SimpleNamespace(
+                text="/refund charge-refund-74",
+                from_user=SimpleNamespace(id=901),
+                answer=AsyncMock(),
+            )
+            bot = SimpleNamespace(refund_star_payment=AsyncMock(return_value=True))
+            with (
+                patch.object(settings, "admin_ids", [901]),
+                patch.object(payment_handlers, "db_session", return_value=session),
+            ):
+                await payment_handlers.cmd_refund(message, bot)
+
+            record = await service.get_payment_by_charge("charge-refund-74")
+            self.assertIsNotNone(record.refunded_at)
+            self.assertEqual(await service.credit_balance(74), 0)
+            bot.refund_star_payment.assert_awaited_once_with(
+                user_id=74,
+                telegram_payment_charge_id="charge-refund-74",
+            )
+            self.assertIn("Возврат", message.answer.await_args.args[0])
+
+    async def test_admin_cannot_refund_an_ai_pack_after_its_credits_were_used(self) -> None:
+        async with self.sessions() as session:
+            session.add(User(id=76, first_name="Buyer"))
+            await session.flush()
+            service = PaymentsService(session)
+            product = get_product("ai2")
+            for charge_id in ("charge-partial-76", "charge-extra-76"):
+                await service.record_payment(
+                    user_id=76,
+                    product=product,
+                    payload=invoice_payload(76, product.id),
+                    currency="XTR",
+                    stars=15,
+                    telegram_charge_id=charge_id,
+                    provider_charge_id="",
+                )
+                await session.commit()
+            limits = LimitService(session)
+            with patch.object(
+                limits,
+                "value",
+                side_effect=lambda key: 1 if key == "limit_ai_per_hour" else 0,
+            ):
+                self.assertTrue(await limits.reserve_ai(76))
+                self.assertTrue((await limits.reserve_ai(76)).credit_used)
+            self.assertEqual(await service.credit_balance(76), 3)
+
+            message = SimpleNamespace(
+                text="/refund charge-partial-76",
+                from_user=SimpleNamespace(id=901),
+                answer=AsyncMock(),
+            )
+            bot = SimpleNamespace(refund_star_payment=AsyncMock(return_value=True))
+            with (
+                patch.object(settings, "admin_ids", [901]),
+                patch.object(payment_handlers, "db_session", return_value=session),
+            ):
+                await payment_handlers.cmd_refund(message, bot)
+
+            self.assertIsNone(
+                (await service.get_payment_by_charge("charge-partial-76")).refunded_at
+            )
+            bot.refund_star_payment.assert_not_awaited()
+            self.assertIn("использована", message.answer.await_args.args[0])
+
+    async def test_successful_payment_update_persists_credit_before_receipt(self) -> None:
+        async with self.sessions() as session:
+            session.add(User(id=75, first_name="Buyer"))
+            await session.flush()
+            successful_payment = SuccessfulPayment(
+                currency="XTR",
+                total_amount=15,
+                invoice_payload="stars:75:ai2",
+                telegram_payment_charge_id="charge-handler-75",
+                provider_payment_charge_id="",
+            )
+            message = TelegramMessage(
+                message_id=2,
+                date=datetime.now(timezone.utc),
+                chat=TelegramChat(id=75, type="private"),
+                from_user=TelegramUser(
+                    id=75, is_bot=False, first_name="Buyer"
+                ),
+                successful_payment=successful_payment,
+            )
+            with (
+                patch.object(payment_handlers, "db_session", return_value=session),
+                patch.object(payment_handlers, "get_db_user", return_value=None),
+                patch.object(
+                    TelegramMessage, "answer", new_callable=AsyncMock
+                ) as answer,
+            ):
+                await payment_handlers.on_successful_payment(message)
+
+            self.assertEqual(await PaymentsService(session).credit_balance(75), 2)
+            self.assertIn("Начислено AI-генераций", answer.await_args.args[0])
 
     async def test_broadcast_confirmation_is_single_use_and_cancellable(self) -> None:
         async with self.sessions() as session:

@@ -1,13 +1,10 @@
-"""Подготовка к монетизации (Telegram Stars).
-
-Платежи пока не подключены, но вся логика Premium вынесена сюда,
-чтобы позже достаточно было реализовать ``create_invoice_link``.
-"""
+"""Premium access rules and feature descriptions."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List
 
 from bot.config import settings
@@ -46,35 +43,19 @@ class PremiumService:
         return int(settings.premium_stars_price)
 
     def is_premium(self, user) -> bool:
-        return bool(getattr(user, "is_premium", False))
+        if not bool(getattr(user, "is_premium", False)):
+            return False
+        until = getattr(user, "premium_until", None)
+        if until is None:
+            return True
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return until > now
 
     def features(self) -> List[PremiumFeature]:
         return list(FEATURES)
 
     def max_messages(self, user) -> int:
         return 500 if self.is_premium(user) else settings.max_messages
-
-    def async_quote(self) -> str:
-        """Текст о предстоящей оплате (без подключения платёжного провайдера)."""
-        return (
-            "⭐️ <b>Premium</b>\n\n"
-            f"Оплата через Telegram Stars ({self.stars_price} ⭐️) — "
-            "скоро будет доступна.\n\n"
-            "Пока можно пользоваться бесплатным лимитом.\n"
-            "Монетизация подготовлена в коде: добавление оплаты "
-            "не потребует изменения архитектуры."
-        )
-
-    async def create_invoice_link(self, bot, user_id: int) -> str:
-        """Заглушка под Telegram Stars.
-
-        Для включения достаточно реализовать вызов
-        ``bot.send_invoice`` с ``currency='XTR'`` и ``provider_token=''``.
-        """
-        raise NotImplementedError(
-            "Оплата пока не подключена. Включите её в PremiumService.create_invoice_link."
-        )
-
 
 premium_service = PremiumService()
 

@@ -73,7 +73,7 @@
 - **AI-сценарии** через OpenRouter (отключаются, если нет ключа)
 - **Админ-панель**: статистика, пользователи, рассылка с подтверждением, лимиты
 - **Лимиты** и защита от спама с хранением в SQLite
-- **Premium** подготовлен (включая заготовку под Telegram Stars)
+- **Telegram Stars**: Premium на 30 дней и пакеты AI-генераций
 
 ---
 
@@ -178,8 +178,8 @@ LIMITS_ACTIONS_PER_MINUTE=60
 LIMITS_MAX_MESSAGES=200
 LIMITS_MAX_CHATS=100
 
-# --- Монетизация (заготовка под Telegram Stars) ---
-PREMIUM_ENABLED=false
+# --- Монетизация (Telegram Stars) ---
+PREMIUM_ENABLED=true
 PREMIUM_STARS_PRICE=250
 
 # --- Рендерер ---
@@ -776,7 +776,8 @@ chat-constructor-bot/
 │   │   ├── ai_service.py        # OpenRouter + разбор ответа
 │   │   ├── limit_service.py     # лимиты и антиспам
 │   │   ├── templates_service.py # 10 шаблонов
-│   │   ├── premium_service.py   # Premium + заготовка под Stars
+│   │   ├── premium_service.py   # Premium access rules
+│   │   ├── payments_service.py  # Stars catalog + entitlement delivery
 │   │   └── user_service.py      # пользователи, статистика
 │   │
 │   ├── generators/              # генерация изображений
@@ -962,7 +963,7 @@ generators/        как рисовать (Pillow)
 | `LIMITS_ACTIONS_PER_MINUTE` | `60` | Антиспам: действий в минуту |
 | `LIMITS_MAX_MESSAGES` | `200` | Сообщений в одной переписке |
 | `LIMITS_MAX_CHATS` | `100` | Сохранённых переписок |
-| `PREMIUM_ENABLED` | `false` | Включён ли Premium |
+| `PREMIUM_ENABLED` | `true` | Включены ли продажи через Telegram Stars |
 | `PREMIUM_STARS_PRICE` | `250` | Цена в Telegram Stars |
 | `FONTS_DIR` | `fonts` | Каталог шрифтов |
 | `RENDER_WIDTH` | `1080` | Ширина изображения (мин. 600) |
@@ -974,11 +975,20 @@ generators/        как рисовать (Pillow)
 | `PORT` | `8080` | Порт HTTP-сервиса `/health` (нужен платформам с прокси) |
 | `HEALTH_PORT` | `8080` | Явный порт healthcheck; приоритетнее `PORT` |
 | `DISABLE_HEALTH_SERVER` | `0` | `1` — не поднимать HTTP-сервис |
+| `AD_TEXT` | текст | Рекламное сообщение для free-версии |
 
 Перед отправкой Telegram-сервис пропорционально уменьшает слишком высокие
 изображения, чтобы сумма ширины и высоты укладывалась в ограничение Telegram.
 Если достигнут `RENDER_MAX_HEIGHT`, рендерер сохраняет последние сообщения.
-| `AD_TEXT` | текст | Рекламное сообщение для free-версии |
+
+Магазин доступен по кнопке **⭐️ Premium** и команде `/premium`.
+Предложения: Premium на 30 дней за 250⭐ без автопродления; AI-пакеты
+2/15⭐, 5/30⭐ и 10/50⭐. Перед первой покупкой пользователь принимает условия
+через `/terms`; поддержка по покупкам — `/paysupport`. Администратор может
+обработать возврат командой `/refund <telegram_payment_charge_id>`.
+Список последних платежей и charge ID доступен администраторам через `/payments`.
+Если в переменных хостинга задано `PREMIUM_ENABLED=false`, включите
+`PREMIUM_ENABLED=true` и перезапустите бота.
 
 ---
 
@@ -1154,7 +1164,7 @@ pkill -f "bot.main"
 
 | Возможность | Что уже есть | Что нужно добавить |
 |-------------|--------------|--------------------|
-| **Telegram Stars** | `PremiumService.create_invoice_link()` — заготовка, `is_premium`, разные лимиты, `premium_only` у стилей и шаблонов | Реализовать `bot.send_invoice` с `currency='XTR'` и обработчик `pre_checkout_query` |
+| **Telegram Stars** | Инвойсы XTR, pre-checkout, идемпотентное начисление, 30-дневный Premium, AI-кредиты, условия и поддержка | Принимать тестовые платежи в тестовом окружении Telegram перед публикацией |
 | **Другие стили** | Реестр `AVAILABLE_STYLES`, тема — dataclass, рендерер наследует `BaseRenderer` | Добавить `Theme` + класс рендерера, зарегистрировать в `registry.py` |
 | **Другие БД** | `database/engine.py` изолирован, репозитории не знают про SQLite | Заменить `create_async_engine` на PostgreSQL/MySQL, при необходимости поправить `UTCDateTime` |
 | **Другие языки** | Тексты в `keyboards/texts.py`, локализация в одном месте | Добавить `i18n`-словарь и `gettext`-обёртки |
@@ -1191,7 +1201,3 @@ pkill -f "bot.main"
 ---
 
 **Удачной генерации!** 🎨
-
-
-
-

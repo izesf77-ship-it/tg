@@ -22,6 +22,7 @@ S_SETTINGS = "se"
 S_AI = "ai"
 S_TPL = "tpl"
 S_ADMIN = "ad"
+S_PAY = "pay"
 
 
 def cb(*parts: Any) -> str:
@@ -158,4 +159,5 @@ __all__ = [
     "S_AI",
     "S_TPL",
     "S_ADMIN",
+    "S_PAY",
 ]

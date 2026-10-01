@@ -28,6 +28,7 @@ MENU_TEXTS = {
     KB.BTN_MY,
     KB.BTN_HELP,
     KB.BTN_SETTINGS,
+    KB.BTN_PREMIUM,
     KB.BTN_CANCEL,
 }
 
@@ -144,14 +145,17 @@ async def btn_settings(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("premium"))
 async def cmd_premium(message: Message) -> None:
-    """Информация о Premium (оплата пока не подключена)."""
-    from bot.services.premium_service import premium_service
+    """Открыть магазин цифровых товаров."""
+    from bot.handlers.payments import show_store
 
-    await message.answer(
-        T.premium_screen(premium_service.features(), premium_service.stars_price),
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=KB.main_menu(),
-    )
+    await show_store(message)
+
+
+@router.message(F.text == KB.BTN_PREMIUM)
+async def btn_premium(message: Message) -> None:
+    from bot.handlers.payments import show_store
+
+    await show_store(message)
 
 
 @router.message(Command("stats"))

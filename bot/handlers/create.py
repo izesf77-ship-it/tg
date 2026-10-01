@@ -17,6 +17,7 @@ from bot.keyboards import create as CK
 from bot.keyboards import texts as T
 from bot.middleware import get_services, get_db_user
 from bot.services.chat_service import ChatService
+from bot.services.premium_service import premium_service
 from bot.states import Flow
 from bot.utils import callbacks as C
 from bot.utils import files as FILES
@@ -192,8 +193,7 @@ def _style_def(style: str) -> Optional[dict]:
 
 def _premium_of(callback: CallbackQuery) -> bool:
     """Premium-статус пользователя из данных сессии (безопасно)."""
-    db_user = get_db_user()
-    return bool(getattr(db_user, "is_premium", False))
+    return premium_service.is_premium(get_db_user())
 
 
 # --- Участники --------------------------------------------------------

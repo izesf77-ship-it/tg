@@ -11,6 +11,7 @@ from aiogram.types import Message
 
 from bot import screens
 from bot.keyboards import common as KB
+from bot.keyboards import payments as PK
 from bot.keyboards import texts as T
 from bot.services.ai_service import ai_service
 from bot.states import Flow
@@ -55,7 +56,10 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
 
     check = await limits.reserve_ai(message.from_user.id, premium)
     if not check:
-        await message.answer(check.text or "Лимит AI-запросов исчерпан.")
+        await message.answer(
+            check.text or "Лимит AI-запросов исчерпан.",
+            reply_markup=PK.ai_packs_keyboard(),
+        )
         return
 
     status = await message.answer(
@@ -66,20 +70,37 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     try:
         config = await ai_service.generate(prompt)
     except (AIUnavailableError, AIError) as exc:
+        if check.credit_used:
+            await limits.refund_ai_credit(
+                message.from_user.id, check.credit_payment_id
+            )
         await _edit(status, f"⚠️ {exc.user_message}")
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("Непредвиденная ошибка AI")
+        if check.credit_used:
+            await limits.refund_ai_credit(
+                message.from_user.id, check.credit_payment_id
+            )
         await _edit(status, "⚠️ Не удалось получить сценарий. Попробуйте ещё раз.")
         return
 
-    chat, _ = await chats.create(
-        message.from_user.id, style="telegram", template="ai", is_draft=True
-    )
-    config.title = TX.clamp(config.title, 48)
-    await chats.save(message.from_user.id, chat.id, config)
-    await users.count_chat(message.from_user.id)
-    await users.count_ai(message.from_user.id)
+    try:
+        chat, _ = await chats.create(
+            message.from_user.id, style="telegram", template="ai", is_draft=True
+        )
+        config.title = TX.clamp(config.title, 48)
+        await chats.save(message.from_user.id, chat.id, config)
+        await users.count_chat(message.from_user.id)
+        await users.count_ai(message.from_user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Не удалось сохранить AI-сценарий (user=%s)", message.from_user.id)
+        if check.credit_used:
+            await limits.refund_ai_credit(
+                message.from_user.id, check.credit_payment_id
+            )
+        await _edit(status, "⚠️ Сценарий не удалось сохранить. Попробуйте ещё раз.")
+        return
 
     await state.set_state(Flow.editor)
     await state.update_data(chat_id=chat.id, page=0)

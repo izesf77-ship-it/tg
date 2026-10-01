@@ -76,9 +76,12 @@ class StatsRepository:
         stats.images_today = await count(
             UsageEvent, UsageEvent.kind == "image", UsageEvent.created_at >= today
         )
-        stats.ai = await count(UsageEvent, UsageEvent.kind == "ai")
+        ai_kinds = ("ai", "ai_credit")
+        stats.ai = await count(UsageEvent, UsageEvent.kind.in_(ai_kinds))
         stats.ai_today = await count(
-            UsageEvent, UsageEvent.kind == "ai", UsageEvent.created_at >= today
+            UsageEvent,
+            UsageEvent.kind.in_(ai_kinds),
+            UsageEvent.created_at >= today,
         )
         stats.actions = await count(UsageEvent, UsageEvent.kind == "action")
 

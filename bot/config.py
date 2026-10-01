@@ -109,9 +109,11 @@ class Settings(BaseSettings):
     max_messages: int = Field(default=200, ge=1, validation_alias="LIMITS_MAX_MESSAGES")
     max_chats: int = Field(default=100, ge=1, validation_alias="LIMITS_MAX_CHATS")
 
-    # --- Монетизация (заготовка под Telegram Stars) ---
-    premium_enabled: bool = Field(default=False, validation_alias="PREMIUM_ENABLED")
-    premium_stars_price: int = Field(default=250, validation_alias="PREMIUM_STARS_PRICE")
+    # --- Telegram Stars ---
+    premium_enabled: bool = Field(default=True, validation_alias="PREMIUM_ENABLED")
+    premium_stars_price: int = Field(
+        default=250, ge=1, validation_alias="PREMIUM_STARS_PRICE"
+    )
 
     # --- Рендерер ---
     fonts_dir: str = Field(default="fonts", validation_alias="FONTS_DIR")

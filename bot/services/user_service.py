@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.database.repositories import UserRepository
 from bot.models import User
+from bot.models.base import utcnow
+from bot.services.premium_service import premium_service
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,11 @@ class UserService:
         )
         if is_new:
             logger.info("Новый пользователь: %s (%s)", user.id, user.username or "-")
+        if user.is_premium and user.premium_until and user.premium_until <= utcnow():
+            user.is_premium = False
+            user.premium_until = None
+            self.session.add(user)
+            await self.session.flush()
         return user
 
     async def get(self, user_id: int) -> Optional[User]:
@@ -43,7 +50,7 @@ class UserService:
 
     async def is_premium(self, user_id: int) -> bool:
         user = await self.repo.get(user_id)
-        return bool(user and user.is_premium)
+        return premium_service.is_premium(user)
 
     async def is_admin(self, user_id: int) -> bool:
         user = await self.repo.get(user_id)

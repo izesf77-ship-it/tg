@@ -249,20 +249,6 @@ def settings_screen(user, limits_image, limits_ai, ai_status: str) -> str:
     )
 
 
-def premium_screen(features, price: int) -> str:
-    lines = ["⭐️ <b>Premium</b>", ""]
-    for feature in features:
-        lines.append(f"• <b>{T.esc(feature.title)}</b>: {feature.free} → {feature.premium}")
-    lines.append("")
-    lines.append(f"Оплата через Telegram Stars: {price} ⭐️")
-    lines.append("")
-    lines.append(
-        "Платёжная система подготовлена, но пока не подключена. "
-        "Архитектура бота уже поддерживает Premium-возможности."
-    )
-    return "\n".join(lines)
-
-
 def done_text() -> str:
     return "Готово.\n\nЭто фиктивная переписка, созданная в конструкторе."
 
