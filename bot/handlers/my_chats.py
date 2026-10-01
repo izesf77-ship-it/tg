@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bot.middleware import get_services
+from bot.middleware import get_services, is_premium
 import logging
 
 from aiogram import F, Router
@@ -15,6 +15,7 @@ from bot.keyboards import menus as MK
 from bot.keyboards import texts as T
 from bot.states import Flow
 from bot.utils import callbacks as C
+from bot.utils.errors import ChatNotFoundError
 from bot.utils.text_utils import esc
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,12 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "dup":
+        limits = get_services()["limits"]
+        if await chats.count_all(user_id) >= limits.max_chats(is_premium()):
+            await screens.safe_answer(
+                callback, "Достигнут лимит переписок. Удалите ненужные.", alert=True
+            )
+            return
         try:
             copy = await chats.duplicate(user_id, chat_id)
         except Exception as exc:  # noqa: BLE001
@@ -142,8 +149,9 @@ async def on_my_chats(callback: CallbackQuery, state: FSMContext) -> None:
         target_id = C.arg_int(callback.data, 0, chat_id)
         try:
             await chats.delete(user_id, target_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Не удалось удалить #%s: %s", target_id, exc)
+        except ChatNotFoundError as exc:
+            await screens.safe_answer(callback, exc.user_message, alert=True)
+            return
         await state.clear()
         await screens.show(
             callback,

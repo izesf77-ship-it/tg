@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -22,8 +23,10 @@ from bot.models.setting import Setting
 logger = logging.getLogger(__name__)
 
 KIND_IMAGE = "image"
+KIND_IMAGE_ATTEMPT = "image_attempt"
 KIND_AI = "ai"
 KIND_ACTION = "action"
+_RATE_LOCKS = tuple(asyncio.Lock() for _ in range(64))
 
 # Ключи лимитов, которые админ может менять из админ-панели
 LIMIT_KEYS = (
@@ -70,6 +73,10 @@ class LimitService:
         self.usage = UsageRepository(session)
         self.users = UserRepository(session)
 
+    @staticmethod
+    def rate_lock(user_id: int) -> asyncio.Lock:
+        return _RATE_LOCKS[int(user_id) % len(_RATE_LOCKS)]
+
     # --- Админские переопределения --------------------------------
     async def set_override(self, key: str, value: int) -> None:
         """Сохранить лимит в БД (и обновить кэш).
@@ -78,7 +85,13 @@ class LimitService:
         падал с ``AttributeError: no attribute 'session'``, и новое
         значение лимита не применялось вовсе.
         """
+        if key not in LIMIT_KEYS:
+            raise ValueError("Неизвестный ключ лимита.")
         number = int(value)
+        if number < 0 or (
+            key in {"max_messages", "max_chats"} and number == 0
+        ):
+            raise ValueError("Недопустимое значение лимита.")
         cached[key] = number
         session = getattr(self, "session", None)
         if session is None:
@@ -106,9 +119,14 @@ class LimitService:
         result = await self.session.execute(select(Setting))
         for row in result.scalars().all():
             try:
-                cached[row.key] = int(row.value)
+                value = int(row.value)
             except (TypeError, ValueError):
                 continue
+            if row.key not in LIMIT_KEYS or value < 0:
+                continue
+            if row.key in {"max_messages", "max_chats"} and value == 0:
+                continue
+            cached[row.key] = value
         return dict(cached)
 
     def value(self, key: str) -> int:
@@ -128,16 +146,42 @@ class LimitService:
         key = "limit_ai_per_hour_premium" if premium else "limit_ai_per_hour"
         return await self._hourly(user_id, KIND_AI, self.value(key))
 
+    async def reserve_image(self, user_id: int, premium: bool = False) -> LimitResult:
+        async with self.rate_lock(user_id):
+            check = await self.check_image(user_id, premium)
+            if check:
+                await self.log_image_attempt(user_id)
+                await self.session.commit()
+            return check
+
+    async def reserve_ai(self, user_id: int, premium: bool = False) -> LimitResult:
+        async with self.rate_lock(user_id):
+            check = await self.check_ai(user_id, premium)
+            if check:
+                await self.log_ai(user_id)
+                await self.session.commit()
+            return check
+
     async def _hourly(
         self, user_id: int, kind: str, limit: int
     ) -> LimitResult:
         since = utcnow() - timedelta(hours=1)
-        used = await self.usage.count_since(user_id, kind, since)
+        if kind == KIND_IMAGE:
+            used = await self.usage.count_since_kinds(
+                user_id, (KIND_IMAGE, KIND_IMAGE_ATTEMPT), since
+            )
+        else:
+            used = await self.usage.count_since(user_id, kind, since)
         if limit <= 0:
             return LimitResult(True, used, 0)
         if used < limit:
             return LimitResult(True, used, limit)
-        last = await self.usage.last_event(user_id, kind)
+        if kind == KIND_IMAGE:
+            last = await self.usage.last_event_kinds(
+                user_id, (KIND_IMAGE, KIND_IMAGE_ATTEMPT)
+            )
+        else:
+            last = await self.usage.last_event(user_id, kind)
         retry = self._retry_after(last)
         return LimitResult(
             False,
@@ -174,6 +218,9 @@ class LimitService:
 
     async def log_image(self, user_id: int, meta: str | None = None) -> None:
         await self.usage.log(user_id, KIND_IMAGE, meta)
+
+    async def log_image_attempt(self, user_id: int, meta: str | None = None) -> None:
+        await self.usage.log(user_id, KIND_IMAGE_ATTEMPT, meta)
 
     async def log_ai(self, user_id: int, meta: str | None = None) -> None:
         await self.usage.log(user_id, KIND_AI, meta)
@@ -222,6 +269,7 @@ __all__ = [
     "ensure_loaded",
     "cached",
     "KIND_IMAGE",
+    "KIND_IMAGE_ATTEMPT",
     "KIND_AI",
     "KIND_ACTION",
     "LIMIT_KEYS",

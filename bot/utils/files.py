@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+import shutil
 from pathlib import Path
 from typing import Tuple
 
@@ -15,6 +16,7 @@ from bot.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_MEDIA_BYTES = 10 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
@@ -40,6 +42,18 @@ def new_media_path(chat_key: str | int, suffix: str = ".jpg") -> Path:
     return media_dir(chat_key) / f"{digest}_{token}{suffix}"
 
 
+def delete_media(chat_key: str | int) -> None:
+    """Delete the media directory for one user/chat key."""
+    base = settings.media_dir.resolve()
+    safe = "".join(
+        ch for ch in str(chat_key) if ch.isalnum() or ch in "-_"
+    )[:64] or "shared"
+    path = (base / safe).resolve()
+    if path.parent != base or not path.is_dir():
+        return
+    shutil.rmtree(path)
+
+
 def save_bytes(data: bytes, chat_key: str | int, suffix: str = ".jpg") -> Path | None:
     """Сохранить байты изображения на диск. None — если данные некорректны."""
     if not data:
@@ -61,9 +75,12 @@ def is_image_bytes(data: bytes) -> bool:
         return False
     try:
         with Image.open(__import__("io").BytesIO(data)) as img:
+            width, height = img.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                return False
             img.verify()
         return True
-    except (UnidentifiedImageError, OSError, ValueError):
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         return False
 
 
@@ -74,9 +91,17 @@ def probe_image(path: str | Path) -> Tuple[int, int] | None:
         if not p.exists() or p.stat().st_size == 0:
             return None
         with Image.open(p) as img:
+            if img.width <= 0 or img.height <= 0 or img.width * img.height > MAX_IMAGE_PIXELS:
+                return None
             img.load()
             return img.size
-    except (UnidentifiedImageError, OSError, ValueError, MemoryError) as exc:
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        OSError,
+        ValueError,
+        MemoryError,
+    ) as exc:
         logger.warning("Битое изображение %s: %s", path, exc)
         return None
 
@@ -87,10 +112,22 @@ def safe_open(path: str | Path) -> Image.Image | None:
         p = Path(path)
         if not p.exists() or p.stat().st_size == 0:
             return None
-        img = Image.open(p)
-        img.load()
-        return img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
-    except (UnidentifiedImageError, OSError, ValueError, MemoryError) as exc:
+        with Image.open(p) as img:
+            if (
+                img.width <= 0
+                or img.height <= 0
+                or img.width * img.height > MAX_IMAGE_PIXELS
+            ):
+                return None
+            img.load()
+            return img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        OSError,
+        ValueError,
+        MemoryError,
+    ) as exc:
         logger.warning("Не удалось открыть изображение %s: %s", path, exc)
         return None
 
@@ -120,10 +157,12 @@ def cleanup_renders(keep_last: int = 50) -> None:
 
 __all__ = [
     "MAX_MEDIA_BYTES",
+    "MAX_IMAGE_PIXELS",
     "IMAGE_SUFFIXES",
     "ensure_dirs",
     "media_dir",
     "new_media_path",
+    "delete_media",
     "save_bytes",
     "is_image_bytes",
     "probe_image",

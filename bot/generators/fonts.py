@@ -97,7 +97,7 @@ CYRILLIC_PROBE = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭ
 
 
 def is_emoji_char(ch: str) -> bool:
-    return bool(EMOJI_RE.match(ch))
+    return ch == "\u200d" or (ch != "-" and bool(EMOJI_RE.match(ch)))
 
 
 def split_emoji_runs(text: str) -> List[Tuple[str, bool]]:
@@ -145,6 +145,8 @@ class FontManager:
         self.fonts_dir = Path(fonts_dir or settings.fonts_path)
         self._cache: Dict[Tuple[int, str], ImageFont.FreeTypeFont] = {}
         self._fallback: Optional[object] = None
+        self._emoji_font_obj: Optional[ImageFont.FreeTypeFont] = None
+        self._emoji_width_cache: Dict[Tuple[str, int], float] = {}
         self.text_paths: Dict[str, Path] = {}
         self.emoji: EmojiFontInfo = EmojiFontInfo()
         self.warnings: List[str] = []
@@ -316,12 +318,43 @@ class FontManager:
         return total
 
     def emoji_width(self, run: str, size: int) -> float:
-        """Приблизительная ширина emoji-фрагмента."""
+        """Ширина emoji-фрагмента с учётом фактического шрифта."""
         if not self.emoji.available or not run:
             return 0.0
-        base = max(1, int(size))
-        visible = max(1, len([c for c in run if not _is_variation(c)]))
-        return base * 0.95 * visible
+        target_size = max(8, int(size))
+        key = (run, target_size)
+        cached = self._emoji_width_cache.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            font = self._emoji_font(target_size)
+            if font is None:
+                return 0.0
+            if self.emoji.color:
+                bbox = font.getbbox(run)
+                if bbox:
+                    glyph_height = bbox[3] - bbox[1]
+                    if glyph_height > 0:
+                        width = max(
+                            1,
+                            int(
+                                (bbox[2] - bbox[0])
+                                * target_size
+                                / glyph_height
+                            ),
+                        )
+                    else:
+                        width = target_size
+                else:
+                    width = target_size
+            else:
+                width = max(1, int(font.getlength(run)))
+        except (OSError, ValueError):
+            width = target_size
+
+        self._emoji_width_cache[key] = float(width)
+        return float(width)
 
     def line_height(self, size: int, weight: str = "regular") -> int:
         font = self.get(size, weight)
@@ -398,7 +431,9 @@ class FontManager:
         """Отрисовать цветной emoji в растр нужного размера."""
         info = self.emoji
         try:
-            font = ImageFont.truetype(str(info.path), info.native_size)
+            font = self._emoji_font(info.native_size)
+            if font is None:
+                return None
             bbox = font.getbbox(run)
             if not bbox or bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
                 return None
@@ -413,6 +448,18 @@ class FontManager:
         except (OSError, ValueError, MemoryError) as exc:
             logger.debug("Цветной emoji не отрисован: %s", exc)
             return None
+
+    def _emoji_font(self, size: int) -> Optional[ImageFont.FreeTypeFont]:
+        """Получить emoji-шрифт, кэшируя bitmap-шрифт в его native size."""
+        if not self.emoji.path:
+            return None
+        if self.emoji.color:
+            if self._emoji_font_obj is None:
+                self._emoji_font_obj = ImageFont.truetype(
+                    str(self.emoji.path), self.emoji.native_size
+                )
+            return self._emoji_font_obj
+        return ImageFont.truetype(str(self.emoji.path), max(8, int(size)))
 
 
 def _is_variation(ch: str) -> bool:

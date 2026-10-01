@@ -47,13 +47,19 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
-    check = await limits.check_ai(message.from_user.id, premium)
+    if await chats.count_all(message.from_user.id) >= limits.max_chats(premium):
+        await message.answer(
+            "Достигнут лимит переписок. Удалите ненужные в разделе «Мои переписки»."
+        )
+        return
+
+    check = await limits.reserve_ai(message.from_user.id, premium)
     if not check:
         await message.answer(check.text or "Лимит AI-запросов исчерпан.")
         return
 
     status = await message.answer(
-        "⏳ <b>AI придумывает сценарий…</b>\n\nЭто может занять до 30 секунд.",
+        "⏳ <b>AI придумывает сценарий…</b>\n\nЭто может занять до 45 секунд.",
         parse_mode=screens.PARSE_MODE,
     )
 
@@ -74,7 +80,6 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     await chats.save(message.from_user.id, chat.id, config)
     await users.count_chat(message.from_user.id)
     await users.count_ai(message.from_user.id)
-    await limits.log_ai(message.from_user.id, chat.id)
 
     await _edit(status, "")
     await state.set_state(Flow.editor)

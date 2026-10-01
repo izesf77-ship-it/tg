@@ -223,7 +223,6 @@ async def main() -> int:
                 # в бесконечном цикле, оставляя бота без сообщений об ошибке.
                 attempt += 1
                 logger.exception("Непредвиденная ошибка при работе polling")
-                print(f"Ошибка работы бота: {type(exc).__name__}: {exc}", file=sys.stderr)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Получен сигнал остановки")
     finally:

@@ -8,6 +8,8 @@ import logging
 import time
 from typing import Optional
 
+from PIL import Image
+
 from bot.config import settings
 from bot.generators import get_renderer
 from bot.schemas import ChatConfig
@@ -15,6 +17,7 @@ from bot.utils import files as F
 from bot.utils.errors import RenderError
 
 logger = logging.getLogger(__name__)
+TELEGRAM_MAX_PHOTO_DIMENSION_SUM = 10_000
 
 
 class RenderService:
@@ -36,6 +39,25 @@ class RenderService:
         try:
             renderer = get_renderer(use_style, width=settings.render_width)
             image = renderer.render(config)
+            dimension_sum = image.width + image.height
+            if dimension_sum > TELEGRAM_MAX_PHOTO_DIMENSION_SUM:
+                scale = TELEGRAM_MAX_PHOTO_DIMENSION_SUM / dimension_sum
+                new_size = (
+                    max(1, int(image.width * scale)),
+                    max(1, int(image.height * scale)),
+                )
+                while sum(new_size) > TELEGRAM_MAX_PHOTO_DIMENSION_SUM:
+                    if new_size[0] >= new_size[1]:
+                        new_size = (new_size[0] - 1, new_size[1])
+                    else:
+                        new_size = (new_size[0], new_size[1] - 1)
+                logger.warning(
+                    "Уменьшено изображение для отправки в Telegram: %dx%d -> %dx%d",
+                    image.width,
+                    image.height,
+                    *new_size,
+                )
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
             buffer = io.BytesIO()
             image.save(buffer, format=fmt, optimize=True)
             data = buffer.getvalue()

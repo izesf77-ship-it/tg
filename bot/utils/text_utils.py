@@ -30,6 +30,24 @@ def clamp(text: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def clean_multiline(text: str) -> str:
+    """Normalize whitespace without collapsing paragraph breaks."""
+    if not text:
+        return ""
+    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [WHITESPACE_RE.sub(" ", line).strip() for line in normalized.split("\n")]
+    return "\n".join(lines).strip("\n")
+
+
+def clamp_multiline(text: str, limit: int) -> str:
+    text = clean_multiline(text)
+    if len(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    return text[: limit - 1].rstrip() + "…"
+
+
 def esc(text: str) -> str:
     """Экранирование для HTML parse_mode."""
     return html.escape(str(text or ""), quote=False)
@@ -85,6 +103,8 @@ def fit_text(text: str, limit: int) -> str:
 __all__ = [
     "clean",
     "clamp",
+    "clean_multiline",
+    "clamp_multiline",
     "esc",
     "plural_ru",
     "messages_word",

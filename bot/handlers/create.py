@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -20,7 +21,7 @@ from bot.states import Flow
 from bot.utils import callbacks as C
 from bot.utils import files as FILES
 from bot.utils import text_utils as TX
-from bot.utils.errors import TextTooLongError, ValidationError
+from bot.utils.errors import InvalidTimeError, TextTooLongError, ValidationError
 from bot.utils.time_utils import current_time_str
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ router = Router(name="create")
 PARTICIPANT_FIELDS = {"name", "username", "display_name", "status", "last_seen"}
 
 
-async def open_creation(message: Message, state: FSMContext) -> None:
+async def open_creation(message: Message | CallbackQuery, state: FSMContext) -> None:
     """Шаг 1: выбор стиля интерфейса (или восстановление черновика)."""
     chats = get_services()["chats"]
     limits = get_services()["limits"]
@@ -43,34 +44,47 @@ async def open_creation(message: Message, state: FSMContext) -> None:
     # поэтому имена участников молча терялись при следующем запуске.
     draft = await chats.get_draft(message.from_user.id)
     if draft is not None and _draft_has_content(draft, chats):
-        await message.answer(
+        text = (
             "📌 У вас есть незавершённая переписка "
-            f"({draft.message_count} сообщ.).\n\nПродолжить её?",
-            parse_mode=screens.PARSE_MODE,
-            reply_markup=_resume_keyboard(draft.id),
+            f"({draft.message_count} сообщ.).\n\nПродолжить её?"
         )
+        keyboard = _resume_keyboard(draft.id)
+        if isinstance(message, CallbackQuery):
+            await screens.show(message, text, keyboard)
+        else:
+            await message.answer(
+                text, parse_mode=screens.PARSE_MODE, reply_markup=keyboard
+            )
         await state.clear()
         return
 
-    count = await chats.count_saved(message.from_user.id)
+    count = await chats.count_all(message.from_user.id)
     premium = bool(getattr(db_user, "is_premium", False))
     max_chats = limits.max_chats(premium)
     if count >= max_chats:
-        await message.answer(
-            f"Достигнут лимит: {max_chats} сохранённых переписок.\n"
-            "Удалите лишние в разделе «📂 Мои переписки».",
-            reply_markup=KB.main_menu(),
+        text = (
+            f"Достигнут лимит: {max_chats} переписок.\n"
+            "Удалите лишние в разделе «📂 Мои переписки»."
         )
+        if isinstance(message, CallbackQuery):
+            await screens.safe_answer(message, text, alert=True)
+        else:
+            await message.answer(text, reply_markup=KB.main_menu())
         return
 
     await state.set_state(Flow.style)
-    await message.answer(
+    text = (
         "🎨 <b>Выбери стиль интерфейса</b>\n\n"
         "От него зависит, как будет выглядеть итоговое изображение.\n"
-        "Основной и самый проработанный стиль — Telegram.",
-        parse_mode=screens.PARSE_MODE,
-        reply_markup=CK.style_menu(premium),
+        "Основной и самый проработанный стиль — Telegram."
     )
+    keyboard = CK.style_menu(premium)
+    if isinstance(message, CallbackQuery):
+        await screens.show(message, text, keyboard)
+    else:
+        await message.answer(
+            text, parse_mode=screens.PARSE_MODE, reply_markup=keyboard
+        )
 
 
 def _draft_has_content(draft, chats) -> bool:
@@ -137,6 +151,16 @@ async def on_style(callback: CallbackQuery, state: FSMContext) -> None:
 
     chats = get_services()["chats"]
     users = get_services()["user"]
+    limits = get_services()["limits"]
+    if await chats.count_all(callback.from_user.id) >= limits.max_chats(
+        _premium_of(callback)
+    ):
+        await screens.safe_answer(
+            callback,
+            "Достигнут лимит переписок. Удалите ненужные в разделе «Мои переписки».",
+            alert=True,
+        )
+        return
     try:
         chat, config = await chats.create(callback.from_user.id, style=style)
     except Exception as exc:  # noqa: BLE001
@@ -404,8 +428,18 @@ async def _download_photo(bot: Bot, file_id: str, user_id: int) -> Optional[Path
     except Exception as exc:  # noqa: BLE001
         logger.warning("Не удалось скачать фото: %s", exc)
         return None
-    if not FILES.is_image_bytes(data):
+    if len(data) > FILES.MAX_MEDIA_BYTES:
+        logger.warning("Полученное изображение слишком большое: %s байт", len(data))
+        return None
+    path = await asyncio.to_thread(_save_avatar, data, user_id)
+    if path is None:
         logger.warning("Полученный файл не является изображением")
+        return None
+    return path
+
+
+def _save_avatar(data: bytes, user_id: int) -> Optional[Path]:
+    if not FILES.is_image_bytes(data):
         return None
     return FILES.save_bytes(data, user_id, ".jpg")
 
@@ -453,7 +487,7 @@ async def on_participant_text(message: Message, state: FSMContext) -> None:
             try:
                 participant.last_seen = parse_time(value)
                 participant.status = "был(а) недавно"
-            except Exception:  # noqa: BLE001
+            except InvalidTimeError:
                 await message.answer(
                     "Неверное время. Формат: <code>12:41</code> (часы от 0 до 23)."
                 )
@@ -520,6 +554,14 @@ async def on_template(callback: CallbackQuery, state: FSMContext) -> None:
             return
         chats = get_services()["chats"]
         users = get_services()["user"]
+        limits = get_services()["limits"]
+        if await chats.count_all(callback.from_user.id) >= limits.max_chats(premium):
+            await screens.safe_answer(
+                callback,
+                "Достигнут лимит переписок. Удалите ненужные в разделе «Мои переписки».",
+                alert=True,
+            )
+            return
         config = template.build()
         chat, _ = await chats.create(
             callback.from_user.id, style=config.style, template=key, is_draft=True

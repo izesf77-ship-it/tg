@@ -91,11 +91,9 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
     """Отмена любой операции и возврат в главное меню."""
     await state.clear()
     await message.answer(
-        "❌ Действие отменено.",
+        "❌ Действие отменено.\n\n" + T.WELCOME,
+        parse_mode=screens.PARSE_MODE,
         reply_markup=KB.main_menu(),
-    )
-    await message.answer(
-        T.WELCOME, parse_mode=screens.PARSE_MODE, reply_markup=KB.main_menu()
     )
 
 
@@ -148,7 +146,9 @@ async def cmd_stats(message: Message) -> None:
     if not settings.is_admin(message.from_user.id):
         await message.answer("Команда доступна только администраторам.")
         return
-    await message.answer("Используйте /admin для статистики.")
+    from bot.handlers.admin import send_stats
+
+    await send_stats(message)
 
 
 __all__ = ["router", "cmd_start", "cmd_help", "cmd_cancel", "MENU_TEXTS"]

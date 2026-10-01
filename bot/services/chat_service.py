@@ -71,6 +71,9 @@ class ChatService:
     async def count_saved(self, user_id: int) -> int:
         return await self.repo.count_for_user(user_id, only_saved=True)
 
+    async def count_all(self, user_id: int) -> int:
+        return await self.repo.count_for_user(user_id)
+
     # --- Финализация -------------------------------------------------
     async def finish(self, user_id: int, chat_id: int, config: ChatConfig) -> Chat:
         chat = await self.require_chat(user_id, chat_id)

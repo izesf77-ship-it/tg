@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from bot.utils import text_utils as T
 from bot.utils.time_utils import current_time_str
 
-MAX_MESSAGES = 200
+MAX_MESSAGES = 500
 
 
 class MessageKind(str, Enum):
@@ -162,7 +162,7 @@ class Message(BaseModel):
     @field_validator("text")
     @classmethod
     def _text(cls, v: str) -> str:
-        return T.clamp(v, T.MAX_MESSAGE_LENGTH)
+        return T.clamp_multiline(v, T.MAX_MESSAGE_LENGTH)
 
     @field_validator("forward_from")
     @classmethod
@@ -236,7 +236,7 @@ class ChatSettings(BaseModel):
     date_dividers: bool = True
     header_status: bool = True
     bubble_max_ratio: float = 0.76
-    max_messages: int = MAX_MESSAGES
+    max_messages: int = 200
 
     @field_validator("bubble_max_ratio")
     @classmethod

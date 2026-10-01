@@ -23,6 +23,7 @@ from bot.generators.fonts import FontManager, get_font_manager
 from bot.generators.text_layout import fit_single_line, wrap_text
 from bot.generators.themes import Theme, get_theme
 from bot.schemas import ChatConfig, ChatSettings, Message, MessageKind, Participant
+from bot.utils.errors import RenderError
 from bot.utils import files as F
 
 logger = logging.getLogger(__name__)
@@ -92,9 +93,32 @@ class BaseRenderer:
         body_height = sum(lay.height for lay in layouts) + self._bottom_padding(config)
         total = self.header_height + body_height
         max_h = settings.render_max_height
+        if max_h < 0:
+            raise RenderError("RENDER_MAX_HEIGHT не может быть отрицательным.")
         if max_h and total > max_h:
-            logger.warning("Изображение выше лимита (%s>%s), обрезаем", total, max_h)
-            total = max_h
+            padding = self._bottom_padding(config)
+            available = max_h - self.header_height - padding
+            selected: List[Layout] = []
+            selected_height = 0
+            for lay in reversed(layouts):
+                if lay.kind == MessageKind.DATE and (
+                    not selected or selected[-1].kind == MessageKind.DATE
+                ):
+                    continue
+                if selected_height + lay.height > available:
+                    break
+                selected.append(lay)
+                selected_height += lay.height
+            if not selected:
+                raise RenderError(
+                    "Новейшее сообщение не помещается в заданную высоту изображения."
+                )
+            layouts = list(reversed(selected))
+            total = self.header_height + selected_height + padding
+            logger.warning(
+                "Ограничена высота изображения: скрыто элементов=%s",
+                len(messages) - len(layouts),
+            )
 
         img = self._create_background(total)
         self._paint_header(img, config)
@@ -102,8 +126,6 @@ class BaseRenderer:
         draw = ImageDraw.Draw(img, "RGBA")
         y = self.header_height
         for lay in layouts:
-            if y + lay.height > total:
-                break
             y = self.paint_message(img, draw, lay, config, y)
         self.paint_scroll_button(img)
         self.paint_input_bar(img)

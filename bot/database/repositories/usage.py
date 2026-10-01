@@ -37,6 +37,18 @@ class UsageRepository:
         )
         return int(result.scalar() or 0)
 
+    async def count_since_kinds(
+        self, user_id: int, kinds: tuple[str, ...], since: datetime
+    ) -> int:
+        result = await self.session.execute(
+            select(func.count(UsageEvent.id)).where(
+                UsageEvent.user_id == int(user_id),
+                UsageEvent.kind.in_(kinds),
+                UsageEvent.created_at >= since,
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def count_all(self, kind: str) -> int:
         result = await self.session.execute(
             select(func.count(UsageEvent.id)).where(UsageEvent.kind == kind)
@@ -47,6 +59,20 @@ class UsageRepository:
         result = await self.session.execute(
             select(UsageEvent.created_at)
             .where(UsageEvent.user_id == int(user_id), UsageEvent.kind == kind)
+            .order_by(UsageEvent.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def last_event_kinds(
+        self, user_id: int, kinds: tuple[str, ...]
+    ) -> Optional[datetime]:
+        result = await self.session.execute(
+            select(UsageEvent.created_at)
+            .where(
+                UsageEvent.user_id == int(user_id),
+                UsageEvent.kind.in_(kinds),
+            )
             .order_by(UsageEvent.created_at.desc())
             .limit(1)
         )

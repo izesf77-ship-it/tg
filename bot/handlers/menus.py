@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from bot.middleware import get_services, get_db_user, get_context, is_premium
+import asyncio
 import logging
+
+from bot.middleware import (
+    db_session,
+    get_context,
+    get_db_user,
+    get_services,
+    is_premium,
+)
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -153,6 +161,16 @@ async def on_settings(callback: CallbackQuery, state: FSMContext) -> None:
 
         await session.execute(delete(Chat).where(Chat.user_id == user_id))
         await session.execute(delete(UsageEvent).where(UsageEvent.user_id == user_id))
+        from bot.utils.files import delete_media
+
+        await asyncio.to_thread(delete_media, user_id)
+        user = get_db_user()
+        if user is not None:
+            user.total_images = 0
+            user.total_ai = 0
+            user.total_chats = 0
+            user.total_actions = 0
+            session.add(user)
         await session.commit()
         logger.info("Данные пользователя %s удалены", user_id)
         await state.clear()

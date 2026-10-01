@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import Broadcast
@@ -31,6 +31,32 @@ class BroadcastRepository:
         await self.session.flush()
         return item
 
+    async def claim_pending(self, broadcast_id: int, admin_id: int) -> Optional[Broadcast]:
+        result = await self.session.execute(
+            update(Broadcast)
+            .where(
+                Broadcast.id == int(broadcast_id),
+                Broadcast.admin_id == int(admin_id),
+                Broadcast.status == "pending",
+            )
+            .values(status="sending")
+        )
+        if result.rowcount != 1:
+            return None
+        return await self.get(broadcast_id)
+
+    async def cancel_pending(self, broadcast_id: int, admin_id: int) -> bool:
+        result = await self.session.execute(
+            update(Broadcast)
+            .where(
+                Broadcast.id == int(broadcast_id),
+                Broadcast.admin_id == int(admin_id),
+                Broadcast.status == "pending",
+            )
+            .values(status="cancelled")
+        )
+        return result.rowcount == 1
+
     async def finish(self, item: Broadcast, sent: int, failed: int) -> Broadcast:
         item.sent = sent
         item.failed = failed
@@ -47,8 +73,6 @@ class BroadcastRepository:
         return list(result.scalars().all())
 
     async def count(self) -> int:
-        from sqlalchemy import func
-
         res = await self.session.execute(select(func.count(Broadcast.id)))
         return int(res.scalar() or 0)
 

@@ -144,10 +144,14 @@ class DbSessionMiddleware(BaseMiddleware):
 
             if user is not None:
                 # Антиспам: фиксируем действия пользователя
-                try:
-                    await limits_svc.log_action(user.id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Не удалось записать действие: %s", exc)
+                if not _is_control_message(event):
+                    async with limits_svc.rate_lock(user.id):
+                        spam_check = await limits_svc.check_spam(user.id)
+                        if not spam_check:
+                            await _notify_rate_limited(event, spam_check.text)
+                            return None
+                        await limits_svc.log_action(user.id)
+                        await session.commit()
 
             # Контекст в ContextVar: хендлеры читают сервисы без аргументов
             token = set_context(
@@ -168,6 +172,29 @@ async def _notify_banned(event: TelegramObject) -> None:
             await event.answer(text, show_alert=True)
     except Exception as exc:  # noqa: BLE001 # pragma: no cover
         logger.debug("Не удалось отправить уведомление о блокировке: %s", exc)
+
+
+def _is_control_message(event: TelegramObject) -> bool:
+    if not isinstance(event, Message):
+        return False
+    text = (event.text or "").strip()
+    command = text.split(maxsplit=1)[0].split("@")[0].lower() if text else ""
+    if command in ("/start", "/cancel"):
+        return True
+    from bot.keyboards.common import BTN_CANCEL
+
+    return text == BTN_CANCEL
+
+
+async def _notify_rate_limited(event: TelegramObject, text: str) -> None:
+    message = text or "Слишком много действий. Подождите минуту."
+    try:
+        if isinstance(event, Message):
+            await event.answer(message)
+        elif isinstance(event, CallbackQuery):
+            await event.answer(message, show_alert=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось показать ограничение частоты: %s", exc)
 
 
 class ErrorMiddleware(BaseMiddleware):

@@ -106,8 +106,8 @@ class Settings(BaseSettings):
     limit_actions_per_minute: int = Field(
         default=60, validation_alias="LIMITS_ACTIONS_PER_MINUTE"
     )
-    max_messages: int = Field(default=200, validation_alias="LIMITS_MAX_MESSAGES")
-    max_chats: int = Field(default=100, validation_alias="LIMITS_MAX_CHATS")
+    max_messages: int = Field(default=200, ge=1, validation_alias="LIMITS_MAX_MESSAGES")
+    max_chats: int = Field(default=100, ge=1, validation_alias="LIMITS_MAX_CHATS")
 
     # --- Монетизация (заготовка под Telegram Stars) ---
     premium_enabled: bool = Field(default=False, validation_alias="PREMIUM_ENABLED")
@@ -116,7 +116,9 @@ class Settings(BaseSettings):
     # --- Рендерер ---
     fonts_dir: str = Field(default="fonts", validation_alias="FONTS_DIR")
     render_width: int = Field(default=1080, validation_alias="RENDER_WIDTH")
-    render_max_height: int = Field(default=20000, validation_alias="RENDER_MAX_HEIGHT")
+    render_max_height: int = Field(
+        default=20000, ge=0, validation_alias="RENDER_MAX_HEIGHT"
+    )
 
     # --- Логи ---
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")

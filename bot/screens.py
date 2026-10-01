@@ -17,7 +17,6 @@ from aiogram.types import (
     CallbackQuery,
     Chat,
     InlineKeyboardMarkup,
-    InputFile,
     Message,
     ReplyKeyboardMarkup,
 )
@@ -42,7 +41,6 @@ async def _edit_text(
     target: Message | CallbackQuery,
     text: str,
     keyboard: Optional[InlineKeyboardMarkup] = None,
-    reply_markup: Optional[ReplyKeyboardMarkup] = None,
 ) -> None:
     """Отредактировать текст сообщения, на которое нажали кнопку."""
     if isinstance(target, CallbackQuery):
@@ -75,7 +73,7 @@ async def _edit_photo(
         message = target.message
     else:
         message = target
-    file = InputFile(photo, filename=filename)
+    file = _as_file(photo, filename)
     if message is not None and message.photo:
         try:
             await message.edit_media(
@@ -231,7 +229,23 @@ async def show(
     """Показать текстовый экран (edit или send)."""
     if isinstance(target, CallbackQuery):
         await target.answer()
-        await _edit_text(target, text, keyboard, reply_markup)
+        if reply_markup is not None:
+            message = target.message
+            if message is not None:
+                try:
+                    await message.edit_reply_markup(reply_markup=None)
+                except TelegramBadRequest as exc:
+                    logger.debug("Не удалось убрать старую клавиатуру: %s", exc)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Ошибка удаления старой клавиатуры: %s", exc)
+            bot = message.bot if message is not None else _bot_from_context()
+            chat_id = message.chat.id if message is not None else _callback_chat_id_from_context()
+            if bot is not None and chat_id is not None:
+                await new(bot, chat_id, text, reply_markup=reply_markup)
+            else:
+                logger.warning("Не удалось показать reply-клавиатуру: нет bot/chat")
+        else:
+            await _edit_text(target, text, keyboard)
     else:
         await target.answer(text, parse_mode=PARSE_MODE, reply_markup=reply_markup)
 

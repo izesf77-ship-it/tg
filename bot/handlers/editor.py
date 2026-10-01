@@ -23,7 +23,12 @@ from bot.services.render_service import render_service
 from bot.states import Flow
 from bot.utils import callbacks as C
 from bot.utils import text_utils as TX
-from bot.utils.errors import LimitExceededError, NoMessagesError
+from bot.utils.errors import (
+    ChatNotFoundError,
+    InvalidTimeError,
+    LimitExceededError,
+    NoMessagesError,
+)
 from bot.utils.time_utils import current_time_str, parse_time
 
 logger = logging.getLogger(__name__)
@@ -88,10 +93,7 @@ async def _state_chat_id(data: dict, user_id: int) -> int:
     chat_id = int(data.get("chat_id", -1) or -1)
     if chat_id >= 0:
         return chat_id
-    try:
-        draft = await get_services()["chats"].get_draft(user_id)
-    except Exception:  # noqa: BLE001
-        return -1
+    draft = await get_services()["chats"].get_draft(user_id)
     return int(draft.id) if draft is not None else -1
 
 
@@ -636,7 +638,7 @@ async def on_manual_time_input(message: Message, state: FSMContext) -> None:
 
     try:
         value = parse_time(raw)
-    except Exception:  # noqa: BLE001
+    except InvalidTimeError:
         await message.answer(
             "Неверное время. Формат: <code>12:41</code> (часы 0–23, минуты 0–59).",
             parse_mode=screens.PARSE_MODE,
@@ -654,6 +656,11 @@ async def on_manual_time_input(message: Message, state: FSMContext) -> None:
         await _save_and_back(
             message, state, config, chat_id, message.from_user.id, index, f"🕐 Время: {value}"
         )
+        return
+    await message.answer("Сообщение больше не существует. Откройте редактор заново.")
+    await state.set_state(Flow.editor)
+    await state.update_data(chat_id=chat_id, page=0, field="", pending_text="")
+    await show_editor(message, config, chat_id, state, 0)
 
 
 async def _commit_message(
@@ -666,6 +673,7 @@ async def _commit_message(
     kind = str(data.get("kind", "text"))
     reply_to = data.get("reply_to")
     text = str(data.get("pending_text", ""))
+    forward_from = str(data.get("forward_from", ""))
 
     message = Msg(
         kind=_safe_kind(kind),
@@ -674,6 +682,7 @@ async def _commit_message(
         side=side,
         author_index=side,
         reply_to=reply_to,
+        forward_from=forward_from,
         read=side == 0 or int(data.get("seq", 0)) % 3 != 0,
     )
     _apply_kind(message, kind)
@@ -689,20 +698,40 @@ async def _commit_message(
     max_messages = limits.max_messages(is_premium())
 
     if len(config.messages) >= max_messages:
-        await screens.notify(
-            target,
-            f"Достигнут лимит: максимум {max_messages} сообщений. "
-            "Сократите переписку или сохраните её.",
+        page = max(0, (len(config.messages) - 1) // PER_PAGE)
+        await state.set_state(Flow.editor)
+        await state.update_data(
+            chat_id=chat_id,
+            page=page,
+            field="",
+            pending_text="",
+            forward_from="",
+            reply_to=None,
         )
-        await state.clear()
+        await show_editor(
+            target,
+            config,
+            chat_id,
+            state,
+            page,
+            header=(
+                f"⚠️ Достигнут лимит: максимум {max_messages} сообщений. "
+                "Удалите лишнее или сохраните переписку."
+            ),
+        )
         return
 
+    config.settings.max_messages = max_messages
     config.messages.append(message)
     index = len(config.messages) - 1
     # Чистим временные ключи: иначе следующая правка сообщения будет
     # ошибочно принята за продолжение добавления нового.
     await state.update_data(
-        message_index=index, field="", pending_text="", reply_to=None
+        message_index=index,
+        field="",
+        pending_text="",
+        forward_from="",
+        reply_to=None,
     )
     await _save_and_back(
         target, state, config, chat_id, user_id, index,
@@ -723,7 +752,7 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     chat_id = await _state_chat_id(data, message.from_user.id)
     index = int(data.get("message_index", -1))
-    text = (message.text or "").strip()
+    text = TX.clean_multiline(message.text or "")
 
     if not text:
         await message.answer("Текст не может быть пустым. Попробуйте ещё раз.")
@@ -746,7 +775,9 @@ async def on_add_text(message: Message, state: FSMContext) -> None:
     # превращалась в добавление НОВОГО сообщения — «правка не сохранялась».
     if str(data.get("field", "")) == "text" and index >= 0:
         if 0 <= index < len(config.messages):
-            config.messages[index].text = TX.clamp(text, TX.MAX_MESSAGE_LENGTH)
+            config.messages[index].text = TX.clamp_multiline(
+                text, TX.MAX_MESSAGE_LENGTH
+            )
             config.messages[index].edited = True
             await _save_and_back(
                 message, state, config, chat_id, message.from_user.id, index,
@@ -805,7 +836,10 @@ async def on_media_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     config = await chats.get_config(message.from_user.id, chat_id)
 
     if not (0 <= index < len(config.messages)):
-        await state.clear()
+        await message.answer("Сообщение больше не существует. Откройте редактор заново.")
+        await state.set_state(Flow.editor)
+        await state.update_data(chat_id=chat_id, page=0, field="")
+        await show_editor(message, config, chat_id, state, 0)
         return
     path = await _download_photo(bot, message.photo[-1].file_id, message.from_user.id)
     if path is None:
@@ -831,24 +865,23 @@ async def on_time_text(message: Message, state: FSMContext) -> None:
     config = await chats.get_config(message.from_user.id, chat_id)
 
     if kind == "forward":
-        message_obj = Msg(
-            kind=MessageKind.FORWARD,
-            text=str(data.get("pending_text", "")),
-            forward_from=TX.clamp(text, 48),
-            time=current_time_str(),
-            side=0 if int(data.get("side", 0)) == 0 else 1,
-        )
-        config.messages.append(message_obj)
-        index = len(config.messages) - 1
-        await _save_and_back(
-            message, state, config, chat_id, message.from_user.id, index,
-            "↪ Сообщение добавлено.",
+        if not text:
+            await message.answer("Укажите, от кого переслано сообщение.")
+            return
+        await state.update_data(forward_from=TX.clamp(text, 48))
+        await _commit_message(
+            message,
+            state,
+            config,
+            chat_id,
+            message.from_user.id,
+            current_time_str(),
         )
         return
 
     try:
         value = parse_time(text)
-    except Exception:  # noqa: BLE001
+    except InvalidTimeError:
         await message.answer(
             "Неверный ввод. Формат времени: <code>12:41</code>.",
             parse_mode=screens.PARSE_MODE,
@@ -872,27 +905,33 @@ async def _send_render(
     chats = services["chats"]
     premium = is_premium()
 
-    check = await limits.check_image(user_id, premium)
+    check = await limits.reserve_image(user_id, premium)
     if not check:
         await screens.notify(target, check.text or "Лимит генераций исчерпан.")
         return False
 
     status = await _status_message(target, "⏳ Генерирую изображение…")
+    if isinstance(target, CallbackQuery):
+        await screens.safe_answer(target)
     try:
-        photo = await render_service.render_to_file(config)
-    except Exception as exc:  # noqa: BLE001
+        photo = await render_service.render_bytes(config)
+    except Exception:  # noqa: BLE001
         logger.exception("Ошибка генерации изображения")
-        await _edit_status(target, status, f"❌ {exc}")
+        await _edit_status(
+            target, status, "❌ Не удалось сгенерировать изображение. Попробуйте ещё раз."
+        )
         return False
 
-    await limits.log_image(user_id, str(chat_id))
-    await users.count_image(user_id)
-    await chats.count_render(chat_id)
-    await _edit_status(target, status, "")
     # Передаём Message (или сам CallbackQuery), а не .chat: у Chat нет
     # метода send_photo — было AttributeError: 'Chat' object has no
     # attribute 'send_photo'.
-    await screens.send_photo(target, photo, caption, keyboard)
+    sent = await screens.send_photo(target, photo, caption, keyboard)
+    await _edit_status(target, status, "")
+    if sent is None:
+        return False
+    await limits.log_image(user_id, str(chat_id))
+    await users.count_image(user_id)
+    await chats.count_render(chat_id)
     return True
 
 
@@ -1006,11 +1045,14 @@ async def on_drop(callback: CallbackQuery, state: FSMContext) -> None:
     """Удалить переписку."""
     chat_id = C.chat_id_of(callback.data)
     chats = get_services()["chats"]
-    if chat_id >= 0:
-        try:
-            await chats.delete(callback.from_user.id, chat_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Не удалось удалить переписку #%s: %s", chat_id, exc)
+    if chat_id < 0:
+        await screens.safe_answer(callback, "Переписка не найдена.", alert=True)
+        return
+    try:
+        await chats.delete(callback.from_user.id, chat_id)
+    except ChatNotFoundError as exc:
+        await screens.safe_answer(callback, exc.user_message, alert=True)
+        return
     await state.clear()
     await screens.show(
         callback, "🗑 Переписка удалена.\n\n" + T.WELCOME, reply_markup=KB.main_menu()

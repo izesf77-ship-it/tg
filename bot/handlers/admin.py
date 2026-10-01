@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from bot.middleware import get_services
+from bot.middleware import db_session, get_services
 from bot.services.limit_service import ensure_loaded
+from bot.services.limit_service import LIMIT_KEYS
 import asyncio
 import logging
 
@@ -178,7 +179,8 @@ f"📢 <b>Рассылка</b>\n\n{T.field_prompt('broadcast')}\n\n"
         await screens.ask(
             callback,
 f"✏️ <b>Новое значение</b>\n\nПараметр: <code>{TX.esc(key)}</code>\n\n"
-            "Введите целое число (0 — без лимита).",
+            "Введите целое число. Для максимума сообщений/переписок — от 1; "
+            "для лимита частоты 0 отключает ограничение.",
             reply_markup=KB.input_menu("Например: 30")
         )
         return
@@ -187,7 +189,19 @@ f"✏️ <b>Новое значение</b>\n\nПараметр: <code>{TX.esc(k
         await start_broadcast(callback, C.arg_int(callback.data, 0, -1))
         return
     if action == "cancel_send":
-        await screens.show(callback, "❌ Рассылка отменена.", AK.admin_menu())
+        broadcast_id = C.arg_int(callback.data, 0, -1)
+        cancelled = False
+        if broadcast_id >= 0:
+            cancelled = await BroadcastRepository(db_session()).cancel_pending(
+                broadcast_id, callback.from_user.id
+            )
+            await db_session().commit()
+        text = (
+            "❌ Рассылка отменена."
+            if cancelled
+            else "Эту рассылку уже запустили или отменили."
+        )
+        await screens.show(callback, text, AK.admin_menu())
         return
 
     await screens.safe_answer(callback, "Неизвестное действие.", alert=True)
@@ -237,13 +251,20 @@ async def on_limit_value(message: Message, state: FSMContext) -> None:
         return
     data = await state.get_data()
     key = str(data.get("limit_key", ""))
+    if key not in LIMIT_KEYS:
+        await state.clear()
+        await message.answer("Неизвестный параметр лимита. Откройте админ-панель заново.")
+        return
     raw = (message.text or "").strip()
     try:
         value = int(raw)
-        if value < 0:
+        if value < 0 or (key in {"max_messages", "max_chats"} and value == 0):
             raise ValueError
     except ValueError:
-        await message.answer("Введите целое неотрицательное число. Например: 30")
+        await message.answer(
+            "Введите положительное число для максимума сообщений/переписок "
+            "или неотрицательное для лимита частоты. Например: 30"
+        )
         return
 
     limits = get_services()["limits"]
@@ -264,7 +285,7 @@ async def on_broadcast_text(message: Message, state: FSMContext) -> None:
     """Текст рассылки — показываем подтверждение, НЕ отправляем сразу."""
     if not await _guard(message):
         return
-    text = TX.clean(message.text or "")
+    text = TX.clean_multiline(message.text or "")
     if not text:
         await message.answer("Текст рассылки не может быть пустым.")
         return
@@ -304,12 +325,13 @@ async def start_broadcast(target, broadcast_id: int) -> None:
 
     async with session_scope() as session:
         repo = BroadcastRepository(session)
-        item = await repo.get(broadcast_id)
+        item = await repo.claim_pending(broadcast_id, target.from_user.id)
         if item is None:
-            await screens.safe_answer(target, "Рассылка не найдена.", alert=True)
+            await screens.safe_answer(
+                target, "Рассылка уже запущена, отменена или не найдена.", alert=True
+            )
             return
         text = item.text
-        await repo.update(item, status="sending")
         users = await UserRepository(session).iter_all()
 
     logger.info("Рассылка #%s: %s получателей", broadcast_id, len(users))
@@ -321,7 +343,7 @@ async def start_broadcast(target, broadcast_id: int) -> None:
     sent = failed = 0
     for index, user in enumerate(users, 1):
         try:
-            await bot.send_message(user.id, text)
+            await bot.send_message(user.id, text, parse_mode=None)
             sent += 1
         except Exception as exc:  # noqa: BLE001 - заблокированные и т.п.
             failed += 1

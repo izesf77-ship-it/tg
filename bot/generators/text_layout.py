@@ -83,11 +83,15 @@ def _wrap_single(text: str, fm: FontManager, size: int, max_width: float) -> Lis
             continue
 
         if current and word and current[-1] in NO_BREAK_AFTER:
-            current = candidate
-            continue
+            joined = f"{current}{word}"
+            if fm.measure(joined, size) <= max_width:
+                current = joined
+                continue
         if current and word and word[0] in NO_BREAK_BEFORE:
-            current = f"{current}{word}"
-            continue
+            joined = f"{current}{word}"
+            if fm.measure(joined, size) <= max_width:
+                current = joined
+                continue
 
         if current:
             lines.append(current)

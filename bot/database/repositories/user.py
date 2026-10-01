@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import User
@@ -74,12 +74,19 @@ class UserRepository:
             await self.session.flush()
 
     async def increment(self, user_id: int, field: str, amount: int = 1) -> None:
-        user = await self.get(user_id)
-        if not user:
-            return
-        current = int(getattr(user, field, 0) or 0)
-        setattr(user, field, max(0, current + amount))
-        self.session.add(user)
+        if field not in {
+            "total_images",
+            "total_ai",
+            "total_chats",
+            "total_actions",
+        }:
+            raise ValueError(f"Недопустимое поле счётчика пользователя: {field}")
+        column = getattr(User, field)
+        await self.session.execute(
+            update(User)
+            .where(User.id == int(user_id))
+            .values({field: func.max(0, column + int(amount))})
+        )
         await self.session.flush()
 
     async def set_premium(self, user_id: int, value: bool) -> None:
