@@ -67,7 +67,17 @@ class AIService:
     def __init__(self) -> None:
         self.api_key = settings.openrouter_api_key.strip()
         self.model = settings.openrouter_model.strip() or "openai/gpt-4o-mini"
-        self.url = settings.openrouter_base_url
+        self.url = self._completion_url(settings.openrouter_base_url)
+
+    @staticmethod
+    def _completion_url(base_url: str) -> str:
+        """Принимает как API base URL (/api/v1), так и полный endpoint."""
+        url = (base_url or "").strip().rstrip("/")
+        if not url:
+            url = "https://openrouter.ai/api/v1"
+        if url.endswith("/chat/completions"):
+            return url
+        return f"{url}/chat/completions"
 
     @property
     def enabled(self) -> bool:

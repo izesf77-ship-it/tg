@@ -81,9 +81,13 @@ async def on_ai_prompt(message: Message, state: FSMContext) -> None:
     await users.count_chat(message.from_user.id)
     await users.count_ai(message.from_user.id)
 
-    await _edit(status, "")
     await state.set_state(Flow.editor)
     await state.update_data(chat_id=chat.id, page=0)
+    await _edit(status, "")
+    await message.answer(
+        "✨ Сценарий создан. Продолжайте кнопками под редактором.",
+        reply_markup=KB.hide_keyboard(),
+    )
 
     from bot.handlers.editor import show_editor
 

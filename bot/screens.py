@@ -247,7 +247,11 @@ async def show(
         else:
             await _edit_text(target, text, keyboard)
     else:
-        await target.answer(text, parse_mode=PARSE_MODE, reply_markup=reply_markup)
+        await target.answer(
+            text,
+            parse_mode=PARSE_MODE,
+            reply_markup=reply_markup or keyboard,
+        )
 
 
 async def new(

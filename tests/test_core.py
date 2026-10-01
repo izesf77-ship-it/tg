@@ -4,12 +4,20 @@ import asyncio
 import io
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from aiogram.types import BufferedInputFile, CallbackQuery, User as TelegramUser
-from PIL import Image
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    Chat as TelegramChat,
+    Message as TelegramMessage,
+    ReplyKeyboardRemove,
+    User as TelegramUser,
+)
+from PIL import Image, ImageDraw
 from sqlalchemy import delete, select
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -20,6 +28,7 @@ from bot.config import settings
 from bot.database.repositories import BroadcastRepository, UsageRepository
 from bot.database.repositories.user import UserRepository
 from bot.generators import AVAILABLE_STYLES, get_renderer
+from bot.generators import drawing
 from bot.generators.fonts import get_font_manager, is_emoji_char, split_emoji_runs
 from bot.generators.text_layout import wrap_text
 from bot.handlers import ai as ai_handlers
@@ -92,6 +101,16 @@ class TextValidationTests(unittest.TestCase):
         self.assertIsNotNone(rendered)
         self.assertEqual(fonts.emoji_width(family, 34), rendered.width)
 
+    def test_read_checks_are_drawn_at_requested_x_coordinate(self) -> None:
+        image = Image.new("RGBA", (200, 80), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        drawing.draw_checks(draw, 120, 20, 20, (0, 255, 0), double=True)
+
+        bbox = image.getchannel("A").getbbox()
+        self.assertIsNotNone(bbox)
+        self.assertGreaterEqual(bbox[0], 120)
+
     def test_buffered_photo_uses_aiogram_concrete_input_file(self) -> None:
         file = screens._as_file(b"png-bytes", "test.png")
 
@@ -104,6 +123,25 @@ class TextValidationTests(unittest.TestCase):
         Image.new("RGB", (2, 2)).save(stream, format="PNG")
         with patch("bot.utils.files.MAX_IMAGE_PIXELS", 3):
             self.assertFalse(is_image_bytes(stream.getvalue()))
+
+
+class ScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_show_message_passes_inline_keyboard_to_telegram(self) -> None:
+        message = TelegramMessage(
+            message_id=1,
+            date=datetime.now(timezone.utc),
+            chat=TelegramChat(id=1, type="private"),
+            text="prompt",
+        )
+        keyboard = common_kb.main_menu_inline()
+
+        with patch.object(
+            TelegramMessage, "answer", new_callable=AsyncMock
+        ) as answer:
+            await screens.show(message, "editor", keyboard)
+
+        answer.assert_awaited_once()
+        self.assertIs(answer.await_args.kwargs["reply_markup"], keyboard)
 
 
 class AdminPermissionTests(unittest.TestCase):
@@ -166,6 +204,15 @@ class CreationFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AIEntryTests(unittest.IsolatedAsyncioTestCase):
+    def test_openrouter_base_url_normalizes_to_chat_completions_endpoint(self) -> None:
+        base = "https://openrouter.ai/api/v1"
+        endpoint = f"{base}/chat/completions"
+
+        self.assertEqual(AIService._completion_url(base), endpoint)
+        self.assertEqual(AIService._completion_url(f"{base}/"), endpoint)
+        self.assertEqual(AIService._completion_url(endpoint), endpoint)
+        self.assertEqual(AIService._completion_url(""), endpoint)
+
     async def test_ai_entry_button_opens_prompt_state(self) -> None:
         from bot.services.ai_service import ai_service
 
@@ -249,6 +296,10 @@ class AIEntryTests(unittest.IsolatedAsyncioTestCase):
         users.count_ai.assert_awaited_once_with(1001)
         state.set_state.assert_awaited_once_with(Flow.editor)
         show.assert_awaited_once()
+        self.assertIsInstance(
+            message.answer.await_args_list[-1].kwargs["reply_markup"],
+            ReplyKeyboardRemove,
+        )
 
     def test_ai_generated_config_keeps_disclaimer_disabled_by_default(self) -> None:
         config = AIService.build_config(

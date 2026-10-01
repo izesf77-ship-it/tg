@@ -203,9 +203,9 @@ def draw_checks(
     def check(offset_x: int) -> None:
         draw.line(
             [
-                (offset_x + unit * 0.06, y + unit * 0.52),
-                (offset_x + unit * 0.34, y + unit * 0.80),
-                (offset_x + unit * 0.92, y + unit * 0.16),
+                (x + offset_x + unit * 0.06, y + unit * 0.52),
+                (x + offset_x + unit * 0.34, y + unit * 0.80),
+                (x + offset_x + unit * 0.92, y + unit * 0.16),
             ],
             fill=color + (255,), width=stroke, joint="curve",
         )
